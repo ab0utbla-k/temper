@@ -90,9 +90,10 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	err = (&ChaosExperimentReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("chaosexperiment"),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Recorder:    mgr.GetEventRecorder("chaosexperiment"),
+		newScenario: newTestScenario,
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 

@@ -47,6 +47,10 @@ type ChaosExperimentReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
+
+	// newScenario overrides scenario construction in tests.
+	// Nil means buildScenario.
+	newScenario func(c client.Client, spec temperv1alpha1.Scenario) (scenario.Scenario, error)
 }
 
 // +kubebuilder:rbac:groups=temper.io,resources=chaosexperiments,verbs=get;list;watch;create;update;patch;delete
@@ -150,12 +154,19 @@ func (r *ChaosExperimentReconciler) revertIfActive(ctx context.Context, exp *tem
 		return nil
 	}
 
-	s, err := buildScenario(r.Client, exp.Spec.Scenarios[idx])
+	s, err := r.scenarioFor(exp.Spec.Scenarios[idx])
 	if err != nil {
 		return fmt.Errorf("build scenario for revert: %w", err)
 	}
 
 	return s.Revert(ctx, targetFromSpec(exp))
+}
+
+func (r *ChaosExperimentReconciler) scenarioFor(spec temperv1alpha1.Scenario) (scenario.Scenario, error) {
+	if r.newScenario != nil {
+		return r.newScenario(r.Client, spec)
+	}
+	return buildScenario(r.Client, spec)
 }
 
 func (r *ChaosExperimentReconciler) reconcilePending(ctx context.Context, exp *temperv1alpha1.ChaosExperiment) (ctrl.Result, error) {
@@ -187,28 +198,36 @@ func (r *ChaosExperimentReconciler) reconcileRunning(ctx context.Context, exp *t
 
 	// State 1: Not yet injected — inject now.
 	if exp.Status.InjectedAt == nil {
-		s, err := buildScenario(r.Client, spec)
+		s, err := r.scenarioFor(spec)
 		if err != nil {
 			return r.failExperiment(ctx, exp, fmt.Sprintf("Build scenario: %v", err))
 		}
 
-		if err := s.Inject(ctx, target); err != nil {
-			return r.failExperiment(ctx, exp, fmt.Sprintf("Inject %s: %v", spec.Type, err))
+		// Persist intent before the side effect: if this write fails, nothing
+		// was injected and the retry is safe. Writing after Inject risks a
+		// second injection when the write is lost (crash, conflict).
+		exp.Status.InjectedAt = new(metav1.Now())
+		if err := r.Status().Update(ctx, exp); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update status before inject: %w", err)
 		}
 
-		exp.Status.InjectedAt = new(metav1.Now())
+		if err := s.Inject(ctx, target); err != nil {
+			// InjectedAt stays set: clearing it would reopen the double-inject
+			// window for a partially applied Inject.
+			return r.failExperiment(ctx, exp, fmt.Sprintf("Inject %s: %v", spec.Type, err))
+		}
 
 		if exp.Status.Metrics == nil {
 			exp.Status.Metrics = &temperv1alpha1.ExperimentMetrics{}
 		}
 
+		var podsKilled int32
 		if spec.Type == temperv1alpha1.ScenarioTypePodKill {
-			count := int32(1)
+			podsKilled = 1
 			if spec.PodKill != nil {
-				count = spec.PodKill.Count
+				podsKilled = spec.PodKill.Count
 			}
-			exp.Status.Metrics.TotalPodsKilled += count
-			metrics.PodsKilledTotal.WithLabelValues(exp.Namespace, sourceLabel(exp)).Add(float64(count))
+			exp.Status.Metrics.TotalPodsKilled += podsKilled
 		}
 
 		if err := r.Status().Update(ctx, exp); err != nil {
@@ -218,6 +237,9 @@ func (r *ChaosExperimentReconciler) reconcileRunning(ctx context.Context, exp *t
 			len(exp.Spec.Scenarios))
 
 		metrics.ScenariosExecutedTotal.WithLabelValues(exp.Namespace, sourceLabel(exp), string(spec.Type)).Inc()
+		if podsKilled > 0 {
+			metrics.PodsKilledTotal.WithLabelValues(exp.Namespace, sourceLabel(exp)).Add(float64(podsKilled))
+		}
 
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
@@ -244,7 +266,7 @@ func (r *ChaosExperimentReconciler) reconcileRunning(ctx context.Context, exp *t
 	}
 
 	// Duration elapsed — revert and advance.
-	s, err := buildScenario(r.Client, spec)
+	s, err := r.scenarioFor(spec)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("build scenario for revert: %w", err)
 	}
@@ -255,6 +277,10 @@ func (r *ChaosExperimentReconciler) reconcileRunning(ctx context.Context, exp *t
 
 	// Update MTTR if we recorded recovery.
 	if exp.Status.RecoveredAt != nil {
+		// Metrics can be nil here if the post-inject status write was lost.
+		if exp.Status.Metrics == nil {
+			exp.Status.Metrics = &temperv1alpha1.ExperimentMetrics{}
+		}
 		recoveryTime := exp.Status.RecoveredAt.Sub(exp.Status.InjectedAt.Time)
 		metrics.RecoveryTimeSeconds.WithLabelValues(exp.Namespace, sourceLabel(exp), string(spec.Type)).Observe(recoveryTime.Seconds())
 		if prev := exp.Status.Metrics.MeanRecoveryTime; prev != nil && idx > 0 {

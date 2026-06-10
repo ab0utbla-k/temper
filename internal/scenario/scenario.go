@@ -36,6 +36,10 @@ type RecoveryProbe struct {
 }
 
 // Scenario defines the contract for all fault injection types.
+//
+// Callers persist injection intent (Status.InjectedAt) before calling Inject,
+// so a crash or failed status write after a successful Inject never causes a
+// second injection. Implementations can assume at-most-once Inject per run.
 type Scenario interface {
 	// Inject applies the fault. It must be safe to retry on failure.
 	Inject(ctx context.Context, target Target) error
