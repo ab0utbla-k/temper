@@ -2,7 +2,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/gomega"
@@ -13,12 +15,49 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	temperv1alpha1 "github.com/ab0utbla-k/temper/api/v1alpha1"
+	"github.com/ab0utbla-k/temper/internal/scenario"
 )
 
 const (
 	timeout  = 10 * time.Second
 	interval = 250 * time.Millisecond
+
+	// failInjectTarget marks a deployment whose scenario Inject always fails
+	// (see newTestScenario, installed suite-wide in BeforeSuite).
+	failInjectTarget = "dep-fail-inject"
 )
+
+var failInjectCalls atomic.Int32
+
+// newTestScenario builds the real scenario, wrapped so Inject fails (and is
+// counted) for failInjectTarget. All other targets behave normally.
+func newTestScenario(c client.Client, spec temperv1alpha1.Scenario) (scenario.Scenario, error) {
+	s, err := buildScenario(c, spec)
+	if err != nil {
+		return nil, err
+	}
+	return &failInjectScenario{inner: s}, nil
+}
+
+type failInjectScenario struct {
+	inner scenario.Scenario
+}
+
+func (f *failInjectScenario) Inject(ctx context.Context, target scenario.Target) error {
+	if target.Name == failInjectTarget {
+		failInjectCalls.Add(1)
+		return errors.New("inject failed by test")
+	}
+	return f.inner.Inject(ctx, target)
+}
+
+func (f *failInjectScenario) Revert(ctx context.Context, target scenario.Target) error {
+	return f.inner.Revert(ctx, target)
+}
+
+func (f *failInjectScenario) RecoveryProbe() scenario.RecoveryProbe {
+	return f.inner.RecoveryProbe()
+}
 
 func createDeployment(ctx context.Context, name, namespace string, replicas int) *appsv1.Deployment { //nolint:unparam // may vary
 	labels := map[string]string{"app": name}

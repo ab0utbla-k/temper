@@ -108,6 +108,24 @@ var _ = Describe("ChaosExperiment Controller", func() {
 		}, timeout, interval).Should(Succeed())
 	})
 
+	It("should leave InjectedAt set and not re-inject when Inject fails", func() {
+		dep := createDeployment(ctx, failInjectTarget, "default", 1)
+		createRunningPods(ctx, dep)
+		exp := createExperiment(ctx, "exp-fail-inject", "default", dep.Name, 5*time.Second)
+
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.ChaosExperiment
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(exp), &got)).To(Succeed())
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.ExperimentPhaseFailed))
+			// Ghost state: a failed-but-marked attempt must stay marked, or the
+			// next reconcile would re-enter the inject path.
+			g.Expect(got.Status.InjectedAt).NotTo(BeNil())
+		}, timeout, interval).Should(Succeed())
+
+		// At-most-once: requeues after the failure must not call Inject again.
+		Consistently(failInjectCalls.Load, 2*time.Second, interval).Should(Equal(int32(1)))
+	})
+
 	It("should fail when target deployment doesn't exist", func() {
 		exp := createExperiment(ctx, "exp-no-target", "default", "nonexistent", 5*time.Second)
 
