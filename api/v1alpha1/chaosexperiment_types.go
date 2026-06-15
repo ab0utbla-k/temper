@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
@@ -238,5 +239,9 @@ type ChaosExperimentList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&ChaosExperiment{}, &ChaosExperimentList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &ChaosExperiment{}, &ChaosExperimentList{})
+		metav1.AddToGroupVersion(s, GroupVersion)
+		return nil
+	})
 }
