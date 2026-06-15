@@ -101,8 +101,8 @@ type Execution struct {
 	PauseBetween *metav1.Duration `json:"pauseBetween,omitempty"`
 }
 
-// ChaosExperimentSpec defines the desired state of ChaosExperiment
-type ChaosExperimentSpec struct {
+// TrialSpec defines the desired state of Trial
+type TrialSpec struct {
 	// target specifies which workload to inject faults into.
 	// +kubebuilder:validation:Required
 	Target Target `json:"target"`
@@ -131,33 +131,33 @@ const (
 
 const (
 	// AnnotationHaltReason is the annotation key set by the safeguard watcher to signal
-	// that the experiment should be halted. The experiment controller reads and removes it.
+	// that the trial should be halted. The trial controller reads and removes it.
 	AnnotationHaltReason = "temper.io/halt-reason"
 
-	// LabelSchedule is the label set by the schedule controller on every
-	// ChaosExperiment it creates. Metrics use its value as a bounded source
-	// identifier (the schedule name, or "adhoc" when absent).
-	LabelSchedule = "temper.io/schedule"
+	// LabelCronTrial is the label set by the CronTrial controller on every
+	// Trial it creates. Metrics use its value as a bounded source
+	// identifier (the CronTrial name, or "adhoc" when absent).
+	LabelCronTrial = "temper.io/cron-trial"
 
 	// AnnotationHaltCode is the bounded halt bucket set alongside AnnotationHaltReason.
 	// Used for metric labels; the value is one of the HaltCode constants.
 	AnnotationHaltCode = "temper.io/halt-code"
 )
 
-// ExperimentPhase describes the lifecycle stage of a ChaosExperiment.
+// TrialPhase describes the lifecycle stage of a Trial.
 // +kubebuilder:validation:Enum=Pending;Running;Completed;Failed;Halted
-type ExperimentPhase string
+type TrialPhase string
 
 const (
-	ExperimentPhasePending   ExperimentPhase = "Pending"
-	ExperimentPhaseRunning   ExperimentPhase = "Running"
-	ExperimentPhaseCompleted ExperimentPhase = "Completed"
-	ExperimentPhaseFailed    ExperimentPhase = "Failed"
-	ExperimentPhaseHalted    ExperimentPhase = "Halted"
+	TrialPhasePending   TrialPhase = "Pending"
+	TrialPhaseRunning   TrialPhase = "Running"
+	TrialPhaseCompleted TrialPhase = "Completed"
+	TrialPhaseFailed    TrialPhase = "Failed"
+	TrialPhaseHalted    TrialPhase = "Halted"
 )
 
-// ExperimentMetrics tracks aggregate results of the experiment.
-type ExperimentMetrics struct {
+// TrialMetrics tracks aggregate results of the trial.
+type TrialMetrics struct {
 	// totalPodsKilled is the number of pods deleted across all runs.
 	TotalPodsKilled int32 `json:"totalPodsKilled,omitempty"`
 
@@ -166,9 +166,9 @@ type ExperimentMetrics struct {
 	MeanRecoveryTime *metav1.Duration `json:"meanRecoveryTime,omitempty"`
 }
 
-// ChaosExperimentStatus defines the observed state of ChaosExperiment.
-type ChaosExperimentStatus struct {
-	// conditions represent the current state of the ChaosExperiment resource.
+// TrialStatus defines the observed state of Trial.
+type TrialStatus struct {
+	// conditions represent the current state of the Trial resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
 	// Standard condition types include:
@@ -182,13 +182,13 @@ type ChaosExperimentStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// phase is the current lifecycle stage of the experiment.
+	// phase is the current lifecycle stage of the trial.
 	// +optional
-	Phase ExperimentPhase `json:"phase,omitempty"`
+	Phase TrialPhase `json:"phase,omitempty"`
 
-	// metrics tracks aggregate experiment results.
+	// metrics tracks aggregate trial results.
 	// +optional
-	Metrics *ExperimentMetrics `json:"metrics,omitempty"`
+	Metrics *TrialMetrics `json:"metrics,omitempty"`
 
 	// currentScenarioIndex is the zero-based index of the currently executing scenario.
 	CurrentScenarioIndex int32 `json:"currentScenarioIndex,omitempty"`
@@ -201,7 +201,7 @@ type ChaosExperimentStatus struct {
 	// +optional
 	RecoveredAt *metav1.Time `json:"recoveredAt,omitempty"`
 
-	// haltReason explains why a safeguard stopped the experiment. Only set when phase is Halted.
+	// haltReason explains why a safeguard stopped the trial. Only set when phase is Halted.
 	// +optional
 	HaltReason *string `json:"haltReason,omitempty"`
 }
@@ -212,35 +212,35 @@ type ChaosExperimentStatus struct {
 // +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.target.name`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ChaosExperiment is the Schema for the chaosexperiments API
-type ChaosExperiment struct {
+// Trial is the Schema for the trials API
+type Trial struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
-	// spec defines the desired state of ChaosExperiment
+	// spec defines the desired state of Trial
 	// +required
-	Spec ChaosExperimentSpec `json:"spec"`
+	Spec TrialSpec `json:"spec"`
 
-	// status defines the observed state of ChaosExperiment
+	// status defines the observed state of Trial
 	// +optional
-	Status ChaosExperimentStatus `json:"status,omitzero"`
+	Status TrialStatus `json:"status,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// ChaosExperimentList contains a list of ChaosExperiment
-type ChaosExperimentList struct {
+// TrialList contains a list of Trial
+type TrialList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []ChaosExperiment `json:"items"`
+	Items           []Trial `json:"items"`
 }
 
 func init() {
 	SchemeBuilder.Register(func(s *runtime.Scheme) error {
-		s.AddKnownTypes(GroupVersion, &ChaosExperiment{}, &ChaosExperimentList{})
+		s.AddKnownTypes(GroupVersion, &Trial{}, &TrialList{})
 		metav1.AddToGroupVersion(s, GroupVersion)
 		return nil
 	})

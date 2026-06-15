@@ -11,12 +11,12 @@ metadata:
   labels:
     app.kubernetes.io/name: temper
     app.kubernetes.io/managed-by: kustomize
-  name: chaosexperiment-editor-role
+  name: crontrial-editor-role
 rules:
 - apiGroups:
   - temper.io
   resources:
-  - chaosexperiments
+  - crontrials
   verbs:
   - create
   - delete
@@ -28,6 +28,6 @@ rules:
 - apiGroups:
   - temper.io
   resources:
-  - chaosexperiments/status
+  - crontrials/status
   verbs:
   - get

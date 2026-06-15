@@ -11,12 +11,12 @@ metadata:
   labels:
     app.kubernetes.io/name: temper
     app.kubernetes.io/managed-by: kustomize
-  name: chaosschedule-viewer-role
+  name: trial-viewer-role
 rules:
 - apiGroups:
   - temper.io
   resources:
-  - chaosschedules
+  - trials
   verbs:
   - get
   - list
@@ -24,6 +24,6 @@ rules:
 - apiGroups:
   - temper.io
   resources:
-  - chaosschedules/status
+  - trials/status
   verbs:
   - get

@@ -1,5 +1,5 @@
 ## Append samples of your project ##
 resources:
-- v1alpha1_chaosexperiment.yaml
-- v1alpha1_chaosschedule.yaml
+- v1alpha1_trial.yaml
+- v1alpha1_crontrial.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

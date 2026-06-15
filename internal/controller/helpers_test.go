@@ -123,7 +123,7 @@ func patchDeploymentAvailable(ctx context.Context, name, namespace string) {
 
 func setHaltAnnotation(ctx context.Context, key client.ObjectKey, reason string, code temperv1alpha1.HaltCode) {
 	Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var got temperv1alpha1.ChaosExperiment
+		var got temperv1alpha1.Trial
 		if err := k8sClient.Get(ctx, key, &got); err != nil {
 			return err
 		}
@@ -136,17 +136,17 @@ func setHaltAnnotation(ctx context.Context, key client.ObjectKey, reason string,
 	})).To(Succeed())
 }
 
-func createExperiment(
+func createTrial(
 	ctx context.Context,
 	name, namespace, targetDeployment string, //nolint:unparam // may vary
 	duration time.Duration,
-) *temperv1alpha1.ChaosExperiment {
-	exp := &temperv1alpha1.ChaosExperiment{
+) *temperv1alpha1.Trial {
+	trial := &temperv1alpha1.Trial{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: temperv1alpha1.ChaosExperimentSpec{
+		Spec: temperv1alpha1.TrialSpec{
 			Target: temperv1alpha1.Target{
 				Kind: "Deployment",
 				Name: new(targetDeployment),
@@ -160,7 +160,7 @@ func createExperiment(
 		},
 	}
 
-	Expect(k8sClient.Create(ctx, exp)).To(Succeed())
+	Expect(k8sClient.Create(ctx, trial)).To(Succeed())
 
-	return exp
+	return trial
 }

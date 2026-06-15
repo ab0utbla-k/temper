@@ -89,18 +89,18 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	err = (&ChaosExperimentReconciler{
+	err = (&TrialReconciler{
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorder("chaosexperiment"),
+		Recorder:    mgr.GetEventRecorder("trial"),
 		newScenario: newTestScenario,
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = (&ChaosScheduleReconciler{
+	err = (&CronTrialReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("chaosschedule"),
+		Recorder: mgr.GetEventRecorder("crontrial"),
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 

@@ -30,8 +30,8 @@ rules:
 - apiGroups:
   - temper.io
   resources:
-  - chaosexperiments
-  - chaosschedules
+  - crontrials
+  - trials
   verbs:
   - create
   - delete
@@ -43,15 +43,15 @@ rules:
 - apiGroups:
   - temper.io
   resources:
-  - chaosexperiments/finalizers
-  - chaosschedules/finalizers
+  - crontrials/finalizers
+  - trials/finalizers
   verbs:
   - update
 - apiGroups:
   - temper.io
   resources:
-  - chaosexperiments/status
-  - chaosschedules/status
+  - crontrials/status
+  - trials/status
   verbs:
   - get
   - patch
