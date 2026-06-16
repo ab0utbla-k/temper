@@ -177,18 +177,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.ChaosExperimentReconciler{
+	if err := (&controller.TrialReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("chaosexperiment"),
+		Recorder: mgr.GetEventRecorder("trial"),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "ChaosExperiment")
+		setupLog.Error(err, "Failed to create controller", "controller", "Trial")
 		os.Exit(1)
 	}
-	if err := (&controller.ChaosScheduleReconciler{
+	if err := (&controller.CronTrialReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("chaosschedule"),
+		Recorder: mgr.GetEventRecorder("crontrial"),
 		NewAlertChecker: func(url string) (safeguard.AlertChecker, error) {
 			return safeguard.NewAlertmanagerChecker(url)
 		},
@@ -196,7 +196,7 @@ func main() {
 			return safeguard.NewPrometheusQuerier(url)
 		},
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "ChaosSchedule")
+		setupLog.Error(err, "Failed to create controller", "controller", "CronTrial")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

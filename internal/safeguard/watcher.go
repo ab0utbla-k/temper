@@ -55,36 +55,36 @@ func (w *Watcher) NeedLeaderElection() bool {
 
 func (w *Watcher) checkAll(ctx context.Context) {
 	log := logf.FromContext(ctx)
-	var schedList temperv1alpha1.ChaosScheduleList
-	if err := w.client.List(ctx, &schedList); err != nil {
-		log.Error(err, "Failed to list ChaosSchedules")
+	var cronTrialList temperv1alpha1.CronTrialList
+	if err := w.client.List(ctx, &cronTrialList); err != nil {
+		log.Error(err, "Failed to list CronTrials")
 		return
 	}
 
-	for i := range schedList.Items {
-		sched := &schedList.Items[i]
-		if sched.Status.Phase != temperv1alpha1.SchedulePhaseRunning || sched.Status.ActiveExperimentName == nil {
+	for i := range cronTrialList.Items {
+		cronTrial := &cronTrialList.Items[i]
+		if cronTrial.Status.Phase != temperv1alpha1.CronTrialPhaseRunning || cronTrial.Status.ActiveTrialName == nil {
 			continue
 		}
 
-		w.checkSchedule(ctx, sched)
+		w.checkCronTrial(ctx, cronTrial)
 	}
 }
 
-func (w *Watcher) checkSchedule(ctx context.Context, sched *temperv1alpha1.ChaosSchedule) {
+func (w *Watcher) checkCronTrial(ctx context.Context, cronTrial *temperv1alpha1.CronTrial) {
 	log := logf.FromContext(ctx)
-	sg := sched.Spec.Safeguards
+	sg := cronTrial.Spec.Safeguards
 
 	if sg == nil {
 		return
 	}
 
-	haltCode, haltDetail, checkErr := w.checkAlerts(ctx, sched.Namespace, sg)
+	haltCode, haltDetail, checkErr := w.checkAlerts(ctx, cronTrial.Namespace, sg)
 	if haltCode == "" && checkErr == nil {
-		haltCode, haltDetail, checkErr = w.checkSLO(ctx, sched.Namespace, sg)
+		haltCode, haltDetail, checkErr = w.checkSLO(ctx, cronTrial.Namespace, sg)
 	}
 
-	key := fmt.Sprintf("%s/%s", sched.Namespace, sched.Name)
+	key := fmt.Sprintf("%s/%s", cronTrial.Namespace, cronTrial.Name)
 	needsReplicaCheck := sg.MinReplicasAvailable != nil || sg.MaxUnavailable != nil
 
 	if haltCode == "" && checkErr == nil && !needsReplicaCheck {
@@ -92,25 +92,25 @@ func (w *Watcher) checkSchedule(ctx context.Context, sched *temperv1alpha1.Chaos
 		return
 	}
 
-	var exp temperv1alpha1.ChaosExperiment
+	var trial temperv1alpha1.Trial
 	if err := w.client.Get(ctx, client.ObjectKey{
-		Namespace: sched.Namespace,
-		Name:      *sched.Status.ActiveExperimentName,
-	}, &exp); err != nil {
-		log.Error(err, "Failed to get active experiment", "experiment", *sched.Status.ActiveExperimentName)
+		Namespace: cronTrial.Namespace,
+		Name:      *cronTrial.Status.ActiveTrialName,
+	}, &trial); err != nil {
+		log.Error(err, "Failed to get active trial", "trial", *cronTrial.Status.ActiveTrialName)
 		return
 	}
 
 	if haltCode == "" && needsReplicaCheck {
-		if exp.Spec.Target.Name == nil {
-			log.Info("Skipping replica check: no target name", "schedule", key)
+		if trial.Spec.Target.Name == nil {
+			log.Info("Skipping replica check: no target name", "cronTrial", key)
 		} else {
-			metrics.SafeguardChecksTotal.WithLabelValues(sched.Namespace, metrics.SafeguardTypeReplicas).Inc()
+			metrics.SafeguardChecksTotal.WithLabelValues(cronTrial.Namespace, metrics.SafeguardTypeReplicas).Inc()
 
 			var dep appsv1.Deployment
 			if err := w.client.Get(ctx, client.ObjectKey{
-				Namespace: sched.Namespace,
-				Name:      *exp.Spec.Target.Name,
+				Namespace: cronTrial.Namespace,
+				Name:      *trial.Spec.Target.Name,
 			}, &dep); err != nil {
 				checkErr = err
 			} else {
@@ -127,15 +127,15 @@ func (w *Watcher) checkSchedule(ctx context.Context, sched *temperv1alpha1.Chaos
 
 	switch {
 	case haltCode != "":
-		if err := w.haltExperiment(ctx, &exp, haltCode, haltDetail); err != nil {
-			log.Error(err, "Failed to annotate experiment for halt",
-				"experiment", exp.Name, "code", haltCode, "reason", haltDetail)
+		if err := w.haltTrial(ctx, &trial, haltCode, haltDetail); err != nil {
+			log.Error(err, "Failed to annotate trial for halt",
+				"trial", trial.Name, "code", haltCode, "reason", haltDetail)
 			return
 		}
 
 		log.Info(
-			"Halting experiment",
-			"experiment", exp.Name, "schedule", key, "code", haltCode, "reason", haltDetail)
+			"Halting trial",
+			"trial", trial.Name, "cronTrial", key, "code", haltCode, "reason", haltDetail)
 
 		delete(w.consecutiveFailures, key)
 	case checkErr != nil:
@@ -143,7 +143,7 @@ func (w *Watcher) checkSchedule(ctx context.Context, sched *temperv1alpha1.Chaos
 
 		log.Info(
 			"Safeguard check failed",
-			"schedule", key,
+			"cronTrial", key,
 			"consecutive", w.consecutiveFailures[key],
 			"threshold", w.failureThreshold,
 			"error", checkErr,
@@ -153,13 +153,13 @@ func (w *Watcher) checkSchedule(ctx context.Context, sched *temperv1alpha1.Chaos
 			haltCode = temperv1alpha1.HaltCodeUnreachable
 			haltDetail = fmt.Sprintf("Safeguard checks unreachable for %ds: %v", w.failureThreshold*5, checkErr)
 
-			if err := w.haltExperiment(ctx, &exp, haltCode, haltDetail); err != nil {
-				log.Error(err, "Failed to annotate experiment for halt",
-					"experiment", exp.Name, "code", haltCode, "reason", haltDetail)
+			if err := w.haltTrial(ctx, &trial, haltCode, haltDetail); err != nil {
+				log.Error(err, "Failed to annotate trial for halt",
+					"trial", trial.Name, "code", haltCode, "reason", haltDetail)
 				return
 			}
-			log.Info("Halting experiment",
-				"experiment", exp.Name, "schedule", key, "code", haltCode, "reason", haltDetail)
+			log.Info("Halting trial",
+				"trial", trial.Name, "cronTrial", key, "code", haltCode, "reason", haltDetail)
 			delete(w.consecutiveFailures, key)
 		}
 	default:
@@ -197,17 +197,17 @@ func (w *Watcher) checkSLO(ctx context.Context, namespace string, sg *temperv1al
 	return CheckSLOBreach(ctx, sg.SLOProtection, querier)
 }
 
-func (w *Watcher) haltExperiment(ctx context.Context, exp *temperv1alpha1.ChaosExperiment, code temperv1alpha1.HaltCode, detail string) error {
-	if exp.Annotations == nil {
-		exp.Annotations = make(map[string]string)
+func (w *Watcher) haltTrial(ctx context.Context, trial *temperv1alpha1.Trial, code temperv1alpha1.HaltCode, detail string) error {
+	if trial.Annotations == nil {
+		trial.Annotations = make(map[string]string)
 	}
-	exp.Annotations[temperv1alpha1.AnnotationHaltReason] = detail
-	exp.Annotations[temperv1alpha1.AnnotationHaltCode] = string(code)
+	trial.Annotations[temperv1alpha1.AnnotationHaltReason] = detail
+	trial.Annotations[temperv1alpha1.AnnotationHaltCode] = string(code)
 
-	if err := w.client.Update(ctx, exp); err != nil {
+	if err := w.client.Update(ctx, trial); err != nil {
 		return err
 	}
 
-	metrics.SafeguardHaltsTotal.WithLabelValues(exp.Namespace, string(code)).Inc()
+	metrics.SafeguardHaltsTotal.WithLabelValues(trial.Namespace, string(code)).Inc()
 	return nil
 }

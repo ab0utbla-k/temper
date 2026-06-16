@@ -28,7 +28,7 @@ import (
 // For Kubernetes API conventions, see:
 // https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
 
-// ConcurrencyPolicy determines how to handle overlapping experiment runs.
+// ConcurrencyPolicy determines how to handle overlapping trial runs.
 // +kubebuilder:validation:Enum=Forbid;Allow;Replace
 type ConcurrencyPolicy string
 
@@ -89,7 +89,7 @@ type SLOProtection struct {
 	// +kubebuilder:default=static
 	Mode SLOMode `json:"mode"`
 
-	// threshold is the value above which the experiment is halted (static mode).
+	// threshold is the value above which the trial is halted (static mode).
 	// +optional
 	Threshold *string `json:"threshold,omitempty"`
 
@@ -98,9 +98,9 @@ type SLOProtection struct {
 	Queries []SLOQuery `json:"queries,omitempty"`
 }
 
-// Safeguards defines safety checks performed before and during experiments.
+// Safeguards defines safety checks performed before and during trials.
 type Safeguards struct {
-	// maxUnavailable is the maximum number of pods that can be unavailable during an experiment.
+	// maxUnavailable is the maximum number of pods that can be unavailable during an trial.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxUnavailable *int32 `json:"maxUnavailable,omitempty"`
@@ -127,11 +127,11 @@ type Safeguards struct {
 	SLOProtection *SLOProtection `json:"sloProtection,omitempty"`
 }
 
-// ChaosScheduleSpec defines the desired state of ChaosSchedule
-type ChaosScheduleSpec struct {
-	// experimentRef references the ChaosExperiment to run.
+// CronTrialSpec defines the desired state of CronTrial
+type CronTrialSpec struct {
+	// trialRef references the Trial to run.
 	// +kubebuilder:validation:Required
-	ExperimentRef string `json:"experimentRef"`
+	TrialRef string `json:"trialRef"`
 
 	// schedule is a cron expression defining when to run (e.g., "0 2 * * 1-5").
 	// +kubebuilder:validation:Required
@@ -149,26 +149,26 @@ type ChaosScheduleSpec struct {
 	// +kubebuilder:default=false
 	Suspend bool `json:"suspend,omitempty"`
 
-	// safeguards defines safety checks performed before and during experiments.
+	// safeguards defines safety checks performed before and during trials.
 	// +optional
 	Safeguards *Safeguards `json:"safeguards,omitempty"`
 }
 
-// SchedulePhase describes the lifecycle stage of a ChaosSchedule.
+// CronTrialPhase describes the lifecycle stage of a CronTrial.
 // +kubebuilder:validation:Enum=Idle;Running;Paused;Halted;Completed;Failed
-type SchedulePhase string
+type CronTrialPhase string
 
 const (
-	SchedulePhaseIdle      SchedulePhase = "Idle"
-	SchedulePhaseRunning   SchedulePhase = "Running"
-	SchedulePhasePaused    SchedulePhase = "Paused"
-	SchedulePhaseHalted    SchedulePhase = "Halted"
-	SchedulePhaseCompleted SchedulePhase = "Completed"
-	SchedulePhaseFailed    SchedulePhase = "Failed"
+	CronTrialPhaseIdle      CronTrialPhase = "Idle"
+	CronTrialPhaseRunning   CronTrialPhase = "Running"
+	CronTrialPhasePaused    CronTrialPhase = "Paused"
+	CronTrialPhaseHalted    CronTrialPhase = "Halted"
+	CronTrialPhaseCompleted CronTrialPhase = "Completed"
+	CronTrialPhaseFailed    CronTrialPhase = "Failed"
 )
 
-// ScheduleRun tracks the state of the current experiment run.
-type ScheduleRun struct {
+// CronTrialRun tracks the state of the current trial run.
+type CronTrialRun struct {
 	// startedAt is when the current run began.
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`
 
@@ -179,9 +179,9 @@ type ScheduleRun struct {
 	ScenariosTotal int32 `json:"scenariosTotal,omitempty"`
 }
 
-// ScheduleHistory tracks aggregate results across all runs.
-type ScheduleHistory struct {
-	// totalRuns is the number of experiment runs triggered.
+// CronTrialHistory tracks aggregate results across all runs.
+type CronTrialHistory struct {
+	// totalRuns is the number of trial runs triggered.
 	TotalRuns int32 `json:"totalRuns,omitempty"`
 
 	// successfulRuns is the number of runs that completed without issues.
@@ -195,9 +195,9 @@ type ScheduleHistory struct {
 	LastHaltReason *string `json:"lastHaltReason,omitempty"`
 }
 
-// ChaosScheduleStatus defines the observed state of ChaosSchedule.
-type ChaosScheduleStatus struct {
-	// conditions represent the current state of the ChaosSchedule resource.
+// CronTrialStatus defines the observed state of CronTrial.
+type CronTrialStatus struct {
+	// conditions represent the current state of the CronTrial resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
 	// Standard condition types include:
@@ -211,27 +211,27 @@ type ChaosScheduleStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// phase is the current lifecycle stage of the schedule.
+	// phase is the current lifecycle stage of the CronTrial.
 	// +optional
-	Phase SchedulePhase `json:"phase,omitempty"`
+	Phase CronTrialPhase `json:"phase,omitempty"`
 
 	// activeScenario is the name of the currently running scenario type.
 	// +optional
 	ActiveScenario *string `json:"activeScenario,omitempty"`
 
-	// currentRun tracks the in-progress experiment run.
+	// currentRun tracks the in-progress trial run.
 	// +optional
-	CurrentRun *ScheduleRun `json:"currentRun,omitempty"`
+	CurrentRun *CronTrialRun `json:"currentRun,omitempty"`
 
 	// history tracks aggregate results across all runs.
 	// +optional
-	History ScheduleHistory `json:"history,omitempty"`
+	History CronTrialHistory `json:"history,omitempty"`
 
-	// activeExperimentName is the name of the ChaosExperiment CR created for the current run.
+	// activeTrialName is the name of the Trial CR created for the current run.
 	// +optional
-	ActiveExperimentName *string `json:"activeExperimentName,omitempty"`
+	ActiveTrialName *string `json:"activeTrialName,omitempty"`
 
-	// lastScheduleTime is when the last experiment was triggered.
+	// lastScheduleTime is when the last trial was triggered.
 	// +optional
 	LastScheduleTime *metav1.Time `json:"lastScheduleTime,omitempty"`
 }
@@ -239,39 +239,39 @@ type ChaosScheduleStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Experiment",type=string,JSONPath=`.spec.experimentRef`
+// +kubebuilder:printcolumn:name="Trial",type=string,JSONPath=`.spec.trialRef`
 // +kubebuilder:printcolumn:name="Schedule",type=string,JSONPath=`.spec.schedule`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ChaosSchedule is the Schema for the chaosschedules API
-type ChaosSchedule struct {
+// CronTrial is the Schema for the crontrials API
+type CronTrial struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
-	// spec defines the desired state of ChaosSchedule
+	// spec defines the desired state of CronTrial
 	// +required
-	Spec ChaosScheduleSpec `json:"spec"`
+	Spec CronTrialSpec `json:"spec"`
 
-	// status defines the observed state of ChaosSchedule
+	// status defines the observed state of CronTrial
 	// +optional
-	Status ChaosScheduleStatus `json:"status,omitzero"`
+	Status CronTrialStatus `json:"status,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// ChaosScheduleList contains a list of ChaosSchedule
-type ChaosScheduleList struct {
+// CronTrialList contains a list of CronTrial
+type CronTrialList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []ChaosSchedule `json:"items"`
+	Items           []CronTrial `json:"items"`
 }
 
 func init() {
 	SchemeBuilder.Register(func(s *runtime.Scheme) error {
-		s.AddKnownTypes(GroupVersion, &ChaosSchedule{}, &ChaosScheduleList{})
+		s.AddKnownTypes(GroupVersion, &CronTrial{}, &CronTrialList{})
 		metav1.AddToGroupVersion(s, GroupVersion)
 		return nil
 	})

@@ -2,8 +2,8 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/temper.io_chaosexperiments.yaml
-- bases/temper.io_chaosschedules.yaml
+- bases/temper.io_trials.yaml
+- bases/temper.io_crontrials.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

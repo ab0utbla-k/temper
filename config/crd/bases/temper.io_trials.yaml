@@ -4,14 +4,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: chaosexperiments.temper.io
+  name: trials.temper.io
 spec:
   group: temper.io
   names:
-    kind: ChaosExperiment
-    listKind: ChaosExperimentList
-    plural: chaosexperiments
-    singular: chaosexperiment
+    kind: Trial
+    listKind: TrialList
+    plural: trials
+    singular: trial
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -27,7 +27,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ChaosExperiment is the Schema for the chaosexperiments API
+        description: Trial is the Schema for the trials API
         properties:
           apiVersion:
             description: |-
@@ -47,7 +47,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of ChaosExperiment
+            description: spec defines the desired state of Trial
             properties:
               execution:
                 description: execution controls how scenarios are run. Defaults to
@@ -170,11 +170,11 @@ spec:
             - target
             type: object
           status:
-            description: status defines the observed state of ChaosExperiment
+            description: status defines the observed state of Trial
             properties:
               conditions:
                 description: |-
-                  conditions represent the current state of the ChaosExperiment resource.
+                  conditions represent the current state of the Trial resource.
                   Each condition has a unique type and reflects the status of a specific aspect of the resource.
 
                   Standard condition types include:
@@ -247,7 +247,7 @@ spec:
                 format: int32
                 type: integer
               haltReason:
-                description: haltReason explains why a safeguard stopped the experiment.
+                description: haltReason explains why a safeguard stopped the trial.
                   Only set when phase is Halted.
                 type: string
               injectedAt:
@@ -255,7 +255,7 @@ spec:
                 format: date-time
                 type: string
               metrics:
-                description: metrics tracks aggregate experiment results.
+                description: metrics tracks aggregate trial results.
                 properties:
                   meanRecoveryTime:
                     description: meanRecoveryTime is the average time for the target
@@ -268,7 +268,7 @@ spec:
                     type: integer
                 type: object
               phase:
-                description: phase is the current lifecycle stage of the experiment.
+                description: phase is the current lifecycle stage of the trial.
                 enum:
                 - Pending
                 - Running

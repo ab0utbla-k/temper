@@ -11,17 +11,17 @@ metadata:
   labels:
     app.kubernetes.io/name: temper
     app.kubernetes.io/managed-by: kustomize
-  name: chaosschedule-admin-role
+  name: trial-admin-role
 rules:
 - apiGroups:
   - temper.io
   resources:
-  - chaosschedules
+  - trials
   verbs:
   - '*'
 - apiGroups:
   - temper.io
   resources:
-  - chaosschedules/status
+  - trials/status
   verbs:
   - get

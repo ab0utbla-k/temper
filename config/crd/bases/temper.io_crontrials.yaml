@@ -4,22 +4,22 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: chaosschedules.temper.io
+  name: crontrials.temper.io
 spec:
   group: temper.io
   names:
-    kind: ChaosSchedule
-    listKind: ChaosScheduleList
-    plural: chaosschedules
-    singular: chaosschedule
+    kind: CronTrial
+    listKind: CronTrialList
+    plural: crontrials
+    singular: crontrial
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .spec.experimentRef
-      name: Experiment
+    - jsonPath: .spec.trialRef
+      name: Trial
       type: string
     - jsonPath: .spec.schedule
       name: Schedule
@@ -30,7 +30,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ChaosSchedule is the Schema for the chaosschedules API
+        description: CronTrial is the Schema for the crontrials API
         properties:
           apiVersion:
             description: |-
@@ -50,7 +50,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of ChaosSchedule
+            description: spec defines the desired state of CronTrial
             properties:
               concurrencyPolicy:
                 default: Forbid
@@ -61,12 +61,9 @@ spec:
                 - Allow
                 - Replace
                 type: string
-              experimentRef:
-                description: experimentRef references the ChaosExperiment to run.
-                type: string
               safeguards:
                 description: safeguards defines safety checks performed before and
-                  during experiments.
+                  during trials.
                 properties:
                   alertSource:
                     description: alertSource configures the alert backend for safeguard
@@ -94,7 +91,7 @@ spec:
                     type: object
                   maxUnavailable:
                     description: maxUnavailable is the maximum number of pods that
-                      can be unavailable during an experiment.
+                      can be unavailable during an trial.
                     format: int32
                     minimum: 1
                     type: integer
@@ -147,7 +144,7 @@ spec:
                           type: object
                         type: array
                       threshold:
-                        description: threshold is the value above which the experiment
+                        description: threshold is the value above which the trial
                           is halted (static mode).
                         type: string
                     required:
@@ -167,24 +164,27 @@ spec:
                 default: UTC
                 description: timezone for the cron schedule (e.g., "UTC", "America/New_York").
                 type: string
+              trialRef:
+                description: trialRef references the Trial to run.
+                type: string
             required:
-            - experimentRef
             - schedule
+            - trialRef
             type: object
           status:
-            description: status defines the observed state of ChaosSchedule
+            description: status defines the observed state of CronTrial
             properties:
-              activeExperimentName:
-                description: activeExperimentName is the name of the ChaosExperiment
-                  CR created for the current run.
-                type: string
               activeScenario:
                 description: activeScenario is the name of the currently running scenario
                   type.
                 type: string
+              activeTrialName:
+                description: activeTrialName is the name of the Trial CR created for
+                  the current run.
+                type: string
               conditions:
                 description: |-
-                  conditions represent the current state of the ChaosSchedule resource.
+                  conditions represent the current state of the CronTrial resource.
                   Each condition has a unique type and reflects the status of a specific aspect of the resource.
 
                   Standard condition types include:
@@ -252,7 +252,7 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               currentRun:
-                description: currentRun tracks the in-progress experiment run.
+                description: currentRun tracks the in-progress trial run.
                 properties:
                   scenariosCompleted:
                     description: scenariosCompleted is how many scenarios have finished
@@ -286,16 +286,16 @@ spec:
                     format: int32
                     type: integer
                   totalRuns:
-                    description: totalRuns is the number of experiment runs triggered.
+                    description: totalRuns is the number of trial runs triggered.
                     format: int32
                     type: integer
                 type: object
               lastScheduleTime:
-                description: lastScheduleTime is when the last experiment was triggered.
+                description: lastScheduleTime is when the last trial was triggered.
                 format: date-time
                 type: string
               phase:
-                description: phase is the current lifecycle stage of the schedule.
+                description: phase is the current lifecycle stage of the CronTrial.
                 enum:
                 - Idle
                 - Running

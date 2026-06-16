@@ -1,9 +1,9 @@
 apiVersion: temper.io/v1alpha1
-kind: ChaosExperiment
+kind: CronTrial
 metadata:
   labels:
     app.kubernetes.io/name: temper
     app.kubernetes.io/managed-by: kustomize
-  name: chaosexperiment-sample
+  name: crontrial-sample
 spec:
   # TODO(user): Add fields here

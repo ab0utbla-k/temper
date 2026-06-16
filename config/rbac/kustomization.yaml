@@ -22,10 +22,10 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the temper itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- chaosschedule_admin_role.yaml
-- chaosschedule_editor_role.yaml
-- chaosschedule_viewer_role.yaml
-- chaosexperiment_admin_role.yaml
-- chaosexperiment_editor_role.yaml
-- chaosexperiment_viewer_role.yaml
+- crontrial_admin_role.yaml
+- crontrial_editor_role.yaml
+- crontrial_viewer_role.yaml
+- trial_admin_role.yaml
+- trial_editor_role.yaml
+- trial_viewer_role.yaml
 

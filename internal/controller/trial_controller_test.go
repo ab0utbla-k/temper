@@ -12,36 +12,36 @@ import (
 	temperv1alpha1 "github.com/ab0utbla-k/temper/api/v1alpha1"
 )
 
-var _ = Describe("ChaosExperiment Controller", func() {
+var _ = Describe("Trial Controller", func() {
 	It("should add finalizer on creation", func() {
 		dep := createDeployment(ctx, "dep-finalizer", "default", 1)
 		createRunningPods(ctx, dep)
-		exp := createExperiment(ctx, "exp-finalizer", "default", dep.Name, 30*time.Second)
+		trial := createTrial(ctx, "exp-finalizer", "default", dep.Name, 30*time.Second)
 
 		Eventually(func(g Gomega) {
-			var got temperv1alpha1.ChaosExperiment
-			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(exp), &got)).To(Succeed())
-			g.Expect(controllerutil.ContainsFinalizer(&got, experimentFinalizer)).To(BeTrue())
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trial), &got)).To(Succeed())
+			g.Expect(controllerutil.ContainsFinalizer(&got, trialFinalizer)).To(BeTrue())
 		}, timeout, interval).Should(Succeed())
 	})
 
 	It("should run pod-kill and complete", func() {
 		dep := createDeployment(ctx, "dep-happy", "default", 3)
 		createRunningPods(ctx, dep)
-		exp := createExperiment(ctx, "exp-happy", "default", dep.Name, 5*time.Second)
+		trial := createTrial(ctx, "exp-happy", "default", dep.Name, 5*time.Second)
 
 		Eventually(func(g Gomega) {
-			var got temperv1alpha1.ChaosExperiment
-			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(exp), &got)).To(Succeed())
-			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.ExperimentPhaseRunning))
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trial), &got)).To(Succeed())
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseRunning))
 		}, timeout, interval).Should(Succeed())
 
 		patchDeploymentAvailable(ctx, dep.Name, dep.Namespace)
 
 		Eventually(func(g Gomega) {
-			var got temperv1alpha1.ChaosExperiment
-			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(exp), &got)).To(Succeed())
-			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.ExperimentPhaseCompleted))
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trial), &got)).To(Succeed())
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseCompleted))
 			g.Expect(got.Status.Metrics).NotTo(BeNil())
 			g.Expect(got.Status.Metrics.TotalPodsKilled).To(BeNumerically(">", 0))
 		}, 20*time.Second, interval).Should(Succeed())
@@ -50,19 +50,19 @@ var _ = Describe("ChaosExperiment Controller", func() {
 	It("should revert on deletion while running", func() {
 		dep := createDeployment(ctx, "dep-delete", "default", 1)
 		createRunningPods(ctx, dep)
-		exp := createExperiment(ctx, "exp-delete", "default", dep.Name, 30*time.Second)
+		trial := createTrial(ctx, "exp-delete", "default", dep.Name, 30*time.Second)
 
 		Eventually(func(g Gomega) {
-			var got temperv1alpha1.ChaosExperiment
-			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(exp), &got)).To(Succeed())
-			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.ExperimentPhaseRunning))
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trial), &got)).To(Succeed())
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseRunning))
 		}, timeout, interval).Should(Succeed())
 
-		Expect(k8sClient.Delete(ctx, exp)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, trial)).To(Succeed())
 
 		Eventually(func(g Gomega) {
-			var got temperv1alpha1.ChaosExperiment
-			err := k8sClient.Get(ctx, client.ObjectKeyFromObject(exp), &got)
+			var got temperv1alpha1.Trial
+			err := k8sClient.Get(ctx, client.ObjectKeyFromObject(trial), &got)
 			g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		}, timeout, interval).Should(Succeed())
 	})
@@ -70,22 +70,22 @@ var _ = Describe("ChaosExperiment Controller", func() {
 	It("should be idempotent on halt re-entry", func() {
 		dep := createDeployment(ctx, "dep-halt-reentry", "default", 2)
 		createRunningPods(ctx, dep)
-		exp := createExperiment(ctx, "exp-halt-reentry", "default", dep.Name, 30*time.Second)
-		key := client.ObjectKeyFromObject(exp)
+		trial := createTrial(ctx, "exp-halt-reentry", "default", dep.Name, 30*time.Second)
+		key := client.ObjectKeyFromObject(trial)
 
 		Eventually(func(g Gomega) {
-			var got temperv1alpha1.ChaosExperiment
+			var got temperv1alpha1.Trial
 			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
-			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.ExperimentPhaseRunning))
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseRunning))
 		}, timeout, interval).Should(Succeed())
 
 		// First halt — simulates safeguard watcher writing the annotations.
 		setHaltAnnotation(ctx, key, "reason1", temperv1alpha1.HaltCodeAlertMatch)
 
 		Eventually(func(g Gomega) {
-			var got temperv1alpha1.ChaosExperiment
+			var got temperv1alpha1.Trial
 			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
-			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.ExperimentPhaseHalted))
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseHalted))
 			g.Expect(got.Annotations).NotTo(HaveKey(temperv1alpha1.AnnotationHaltReason))
 			g.Expect(got.Annotations).NotTo(HaveKey(temperv1alpha1.AnnotationHaltCode))
 			g.Expect(got.Status.HaltReason).NotTo(BeNil())
@@ -97,11 +97,11 @@ var _ = Describe("ChaosExperiment Controller", func() {
 		setHaltAnnotation(ctx, key, "reason2", temperv1alpha1.HaltCodeSLOBreach)
 
 		Eventually(func(g Gomega) {
-			var got temperv1alpha1.ChaosExperiment
+			var got temperv1alpha1.Trial
 			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
 			g.Expect(got.Annotations).NotTo(HaveKey(temperv1alpha1.AnnotationHaltReason))
 			g.Expect(got.Annotations).NotTo(HaveKey(temperv1alpha1.AnnotationHaltCode))
-			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.ExperimentPhaseHalted))
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseHalted))
 			// HaltReason stays "reason1". If the guard were missing, the main halt path
 			// would run again and overwrite it with "reason2".
 			g.Expect(*got.Status.HaltReason).To(Equal("reason1"))
@@ -111,12 +111,12 @@ var _ = Describe("ChaosExperiment Controller", func() {
 	It("should leave InjectedAt set and not re-inject when Inject fails", func() {
 		dep := createDeployment(ctx, failInjectTarget, "default", 1)
 		createRunningPods(ctx, dep)
-		exp := createExperiment(ctx, "exp-fail-inject", "default", dep.Name, 5*time.Second)
+		trial := createTrial(ctx, "exp-fail-inject", "default", dep.Name, 5*time.Second)
 
 		Eventually(func(g Gomega) {
-			var got temperv1alpha1.ChaosExperiment
-			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(exp), &got)).To(Succeed())
-			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.ExperimentPhaseFailed))
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trial), &got)).To(Succeed())
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseFailed))
 			// Ghost state: a failed-but-marked attempt must stay marked, or the
 			// next reconcile would re-enter the inject path.
 			g.Expect(got.Status.InjectedAt).NotTo(BeNil())
@@ -127,12 +127,12 @@ var _ = Describe("ChaosExperiment Controller", func() {
 	})
 
 	It("should fail when target deployment doesn't exist", func() {
-		exp := createExperiment(ctx, "exp-no-target", "default", "nonexistent", 5*time.Second)
+		trial := createTrial(ctx, "exp-no-target", "default", "nonexistent", 5*time.Second)
 
 		Eventually(func(g Gomega) {
-			var got temperv1alpha1.ChaosExperiment
-			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(exp), &got)).To(Succeed())
-			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.ExperimentPhaseFailed))
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trial), &got)).To(Succeed())
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseFailed))
 		}, timeout, interval).Should(Succeed())
 	})
 })
