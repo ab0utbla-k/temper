@@ -31,8 +31,8 @@ var failInjectCalls atomic.Int32
 
 // newTestScenario builds the real scenario, wrapped so Inject fails (and is
 // counted) for failInjectTarget. All other targets behave normally.
-func newTestScenario(c client.Client, spec temperv1alpha1.Scenario) (scenario.Scenario, error) {
-	s, err := buildScenario(c, spec)
+func newTestScenario(c client.Client, spec temperv1alpha1.Scenario, owner string) (scenario.Scenario, error) {
+	s, err := buildScenario(c, spec, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -43,10 +43,10 @@ type failInjectScenario struct {
 	inner scenario.Scenario
 }
 
-func (f *failInjectScenario) Inject(ctx context.Context, target scenario.Target) error {
+func (f *failInjectScenario) Inject(ctx context.Context, target scenario.Target) (scenario.Result, error) {
 	if target.Name == failInjectTarget {
 		failInjectCalls.Add(1)
-		return errors.New("inject failed by test")
+		return scenario.Result{}, errors.New("inject failed by test")
 	}
 	return f.inner.Inject(ctx, target)
 }
@@ -104,6 +104,32 @@ func createRunningPods(ctx context.Context, dep *appsv1.Deployment) {
 		pod.Status.Phase = corev1.PodRunning
 		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 	}
+}
+
+// createRunningPodsOnNode creates count running pods for dep, all assigned to
+// nodeName. startIdx offsets the pod names so repeated calls don't collide.
+func createRunningPodsOnNode(ctx context.Context, dep *appsv1.Deployment, nodeName string, count, startIdx int) {
+	for i := range count {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("%s-%d", dep.Name, startIdx+i),
+				Namespace: dep.Namespace,
+				Labels:    dep.Spec.Template.Labels,
+			},
+			Spec: dep.Spec.Template.Spec,
+		}
+		pod.Spec.NodeName = nodeName
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+
+		pod.Status.Phase = corev1.PodRunning
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+	}
+}
+
+// createNode creates a bare Node object (envtest has no kubelet to register one).
+func createNode(ctx context.Context, name string) {
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	Expect(k8sClient.Create(ctx, node)).To(Succeed())
 }
 
 func patchDeploymentAvailable(ctx context.Context, name, namespace string) {

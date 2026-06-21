@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -40,6 +41,7 @@ import (
 const (
 	trialFinalizer      = "temper.io/trial-cleanup"
 	recoveryGracePeriod = 5 * time.Second
+	targetReadyGrace    = 60 * time.Second
 )
 
 // TrialReconciler reconciles a Trial object
@@ -50,7 +52,7 @@ type TrialReconciler struct {
 
 	// newScenario overrides scenario construction in tests.
 	// Nil means buildScenario.
-	newScenario func(c client.Client, spec temperv1alpha1.Scenario) (scenario.Scenario, error)
+	newScenario func(c client.Client, spec temperv1alpha1.Scenario, owner string) (scenario.Scenario, error)
 }
 
 // +kubebuilder:rbac:groups=temper.io,resources=trials,verbs=get;list;watch;create;update;patch;delete
@@ -58,6 +60,8 @@ type TrialReconciler struct {
 // +kubebuilder:rbac:groups=temper.io,resources=trials/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;delete
+// +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;update
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -117,7 +121,8 @@ func (r *TrialReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if err := r.Status().Update(ctx, &trial); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update status to Halted: %w", err)
 		}
-		r.Recorder.Eventf(&trial, nil, "Warning", "Halted", "Halted", "Trial halted by safeguard: %s", reason)
+		r.Recorder.Eventf(&trial, nil, "Warning", "Halted", "Halted",
+			"Trial halted by safeguard: %s", reason)
 
 		metrics.TrialsHaltedTotal.WithLabelValues(trial.Namespace, sourceLabel(&trial), code).Inc()
 
@@ -154,7 +159,7 @@ func (r *TrialReconciler) revertIfActive(ctx context.Context, trial *temperv1alp
 		return nil
 	}
 
-	s, err := r.scenarioFor(trial.Spec.Scenarios[idx])
+	s, err := r.scenarioFor(trial, trial.Spec.Scenarios[idx])
 	if err != nil {
 		return fmt.Errorf("build scenario for revert: %w", err)
 	}
@@ -162,11 +167,13 @@ func (r *TrialReconciler) revertIfActive(ctx context.Context, trial *temperv1alp
 	return s.Revert(ctx, targetFromSpec(trial))
 }
 
-func (r *TrialReconciler) scenarioFor(spec temperv1alpha1.Scenario) (scenario.Scenario, error) {
+func (r *TrialReconciler) scenarioFor(trial *temperv1alpha1.Trial, spec temperv1alpha1.Scenario) (scenario.Scenario, error) {
+	owner := client.ObjectKeyFromObject(trial).String()
 	if r.newScenario != nil {
-		return r.newScenario(r.Client, spec)
+		return r.newScenario(r.Client, spec, owner)
 	}
-	return buildScenario(r.Client, spec)
+
+	return buildScenario(r.Client, spec, owner)
 }
 
 func (r *TrialReconciler) reconcilePending(ctx context.Context, trial *temperv1alpha1.Trial) (ctrl.Result, error) {
@@ -187,7 +194,8 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 		if err := r.Status().Update(ctx, trial); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update status to Completed: %w", err)
 		}
-		r.Recorder.Eventf(trial, nil, "Normal", "Completed", "Completed", "All scenarios completed")
+		r.Recorder.Eventf(trial, nil, "Normal", "Completed", "Completed",
+			"All scenarios completed")
 		metrics.TrialsTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), "completed").Inc()
 		metrics.TrialDurationSeconds.WithLabelValues(trial.Namespace, sourceLabel(trial)).Observe(time.Since(trial.CreationTimestamp.Time).Seconds())
 		return ctrl.Result{}, nil
@@ -198,7 +206,7 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 
 	// State 1: Not yet injected — inject now.
 	if trial.Status.InjectedAt == nil {
-		s, err := r.scenarioFor(spec)
+		s, err := r.scenarioFor(trial, spec)
 		if err != nil {
 			return r.failTrial(ctx, trial, fmt.Sprintf("Build scenario: %v", err))
 		}
@@ -211,7 +219,18 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 			return ctrl.Result{}, fmt.Errorf("update status before inject: %w", err)
 		}
 
-		if err := s.Inject(ctx, target); err != nil {
+		result, err := s.Inject(ctx, target)
+		if err != nil {
+			if errors.Is(err, scenario.ErrTargetNotInjectable) && time.Since(trial.CreationTimestamp.Time) < targetReadyGrace {
+				// Target's pods aren't up yet and nothing was injected — clear the
+				// intent marker and retry instead of failing permanently.
+				trial.Status.InjectedAt = nil
+				if err := r.Status().Update(ctx, trial); err != nil {
+					return ctrl.Result{}, fmt.Errorf("clear InjectedAt: %w", err)
+				}
+
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			}
 			// InjectedAt stays set: clearing it would reopen the double-inject
 			// window for a partially applied Inject.
 			return r.failTrial(ctx, trial, fmt.Sprintf("Inject %s: %v", spec.Type, err))
@@ -223,22 +242,31 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 
 		var podsKilled int32
 		if spec.Type == temperv1alpha1.ScenarioTypePodKill {
-			podsKilled = 1
-			if spec.PodKill != nil {
-				podsKilled = spec.PodKill.Count
-			}
+			podsKilled = int32(result.PodsAffected)
 			trial.Status.Metrics.TotalPodsKilled += podsKilled
 		}
 
 		if err := r.Status().Update(ctx, trial); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update status after inject: %w", err)
 		}
-		r.Recorder.Eventf(trial, nil, "Normal", "Injected", "Injected", "Injected scenario %s (%d/%d)", spec.Type, idx+1,
-			len(trial.Spec.Scenarios))
+		r.Recorder.Eventf(trial, nil, "Normal", "Injected", "Injected",
+			"Injected scenario %s (%d/%d)", spec.Type, idx+1, len(trial.Spec.Scenarios))
 
 		metrics.ScenariosExecutedTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), string(spec.Type)).Inc()
 		if podsKilled > 0 {
 			metrics.PodsKilledTotal.WithLabelValues(trial.Namespace, sourceLabel(trial)).Add(float64(podsKilled))
+		}
+
+		if spec.Type == temperv1alpha1.ScenarioTypeNodeDrain {
+			if result.PodsAffected > 0 {
+				metrics.PodsEvictedTotal.WithLabelValues(trial.Namespace, sourceLabel(trial)).Add(float64(result.PodsAffected))
+			}
+
+			for _, f := range result.Findings {
+				r.Recorder.Eventf(trial, nil, "Warning", "EvictionBlocked", "EvictionBlocked",
+					"Pod %s eviction blocked: %s", f.Pod, f.Reason)
+				metrics.EvictionsBlockedTotal.WithLabelValues(trial.Namespace, sourceLabel(trial)).Inc()
+			}
 		}
 
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
@@ -266,7 +294,7 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 	}
 
 	// Duration elapsed — revert and advance.
-	s, err := r.scenarioFor(spec)
+	s, err := r.scenarioFor(trial, spec)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("build scenario for revert: %w", err)
 	}
@@ -292,8 +320,8 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 		}
 	}
 
-	r.Recorder.Eventf(trial, nil, "Normal", "Reverted", "Reverted", "Reverted scenario %s (%d/%d)", spec.Type, idx+1,
-		len(trial.Spec.Scenarios))
+	r.Recorder.Eventf(trial, nil, "Normal", "Reverted", "Reverted",
+		"Reverted scenario %s (%d/%d)", spec.Type, idx+1, len(trial.Spec.Scenarios))
 
 	// Clear per-scenario tracking, advance index.
 	trial.Status.RecoveredAt = nil
@@ -344,7 +372,7 @@ func (r *TrialReconciler) checkRecovery(ctx context.Context, trial *temperv1alph
 	return false, nil
 }
 
-func buildScenario(c client.Client, spec temperv1alpha1.Scenario) (scenario.Scenario, error) {
+func buildScenario(c client.Client, spec temperv1alpha1.Scenario, owner string) (scenario.Scenario, error) {
 	switch spec.Type {
 	case temperv1alpha1.ScenarioTypePodKill:
 		count := int32(1)
@@ -356,6 +384,8 @@ func buildScenario(c client.Client, spec temperv1alpha1.Scenario) (scenario.Scen
 			Client: c,
 			Count:  count,
 		}, nil
+	case temperv1alpha1.ScenarioTypeNodeDrain:
+		return &scenario.NodeDrain{Client: c, Owner: owner}, nil
 	default:
 		return nil, fmt.Errorf("unsupported scenario type: %s", spec.Type)
 	}

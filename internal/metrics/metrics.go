@@ -53,6 +53,16 @@ var (
 		Name: "temper_trials_halted_total",
 		Help: "Total number of trials transitioned to the Halted phase, by code.",
 	}, []string{"namespace", "source", "code"})
+
+	PodsEvictedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "temper_pods_evicted_total",
+		Help: "Total number of pods evicted by node-drain.",
+	}, []string{"namespace", "source"})
+
+	EvictionsBlockedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "temper_evictions_blocked_total",
+		Help: "Total number of evictions blocked by a PodDisruptionBudget.",
+	}, []string{"namespace", "source"})
 )
 
 func init() {
@@ -65,5 +75,7 @@ func init() {
 		SafeguardChecksTotal,
 		SafeguardHaltsTotal,
 		TrialsHaltedTotal,
+		PodsEvictedTotal,
+		EvictionsBlockedTotal,
 	)
 }

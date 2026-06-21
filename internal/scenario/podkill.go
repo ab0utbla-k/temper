@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -17,46 +15,19 @@ type PodKill struct {
 	Count  int32
 }
 
-func (p *PodKill) Inject(ctx context.Context, target Target) error {
+func (p *PodKill) Inject(ctx context.Context, target Target) (Result, error) {
 	if target.Name == "" {
-		return fmt.Errorf("pod-kill scenario requires a named target (label selector not yet supported)")
+		return Result{}, fmt.Errorf("pod-kill scenario requires a named target (label selector not yet supported)")
 	}
 
-	var dep appsv1.Deployment
-	if err := p.Client.Get(ctx, client.ObjectKey{
-		Name:      target.Name,
-		Namespace: target.Namespace,
-	}, &dep); err != nil {
-		return fmt.Errorf("get deployment: %w", err)
-	}
-
-	selector, err := metav1.LabelSelectorAsSelector(dep.Spec.Selector)
+	running, err := requireRunningPods(ctx, p.Client, target)
 	if err != nil {
-		return fmt.Errorf("parse selector: %w", err)
-	}
-
-	var podList corev1.PodList
-	if err = p.Client.List(ctx, &podList,
-		client.InNamespace(target.Namespace),
-		client.MatchingLabelsSelector{Selector: selector},
-	); err != nil {
-		return fmt.Errorf("list pods: %w", err)
-	}
-
-	var running []corev1.Pod
-	for _, pod := range podList.Items {
-		if pod.Status.Phase == corev1.PodRunning {
-			running = append(running, pod)
-		}
-	}
-
-	if len(running) == 0 {
-		return fmt.Errorf("no running pods found for deployment %s/%s", target.Namespace, target.Name)
+		return Result{}, err
 	}
 
 	count := int(p.Count)
 	if count <= 0 {
-		return fmt.Errorf("count must be at least 1, got %d", p.Count)
+		return Result{}, fmt.Errorf("count must be at least 1, got %d", p.Count)
 	}
 	if count > len(running) {
 		count = len(running)
@@ -68,11 +39,11 @@ func (p *PodKill) Inject(ctx context.Context, target Target) error {
 
 	for _, pod := range running[:count] {
 		if err := p.Client.Delete(ctx, &pod); err != nil {
-			return fmt.Errorf("delete pod %s: %w", pod.Name, err)
+			return Result{}, fmt.Errorf("delete pod %s: %w", pod.Name, err)
 		}
 	}
 
-	return nil
+	return Result{PodsAffected: count}, nil
 }
 
 func (p *PodKill) Revert(_ context.Context, _ Target) error {
