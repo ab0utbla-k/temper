@@ -135,4 +135,29 @@ var _ = Describe("Trial Controller", func() {
 			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseFailed))
 		}, timeout, interval).Should(Succeed())
 	})
+
+	It("should wait, not fail, when target pods aren't running yet", func() {
+		// Deployment exists but has no running pods (envtest has no controllers to
+		// create them) — the same state as a Trial applied alongside its workload.
+		dep := createDeployment(ctx, "dep-wait", "default", 1)
+		trial := createTrial(ctx, "exp-wait", "default", dep.Name, 2*time.Second)
+		key := client.ObjectKeyFromObject(trial)
+
+		// With no running pods, the Trial must keep waiting rather than Fail.
+		Consistently(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.Status.Phase).NotTo(Equal(temperv1alpha1.TrialPhaseFailed))
+		}, 5*time.Second, interval).Should(Succeed())
+
+		// Once pods are running it injects and runs to completion.
+		createRunningPods(ctx, dep)
+		patchDeploymentAvailable(ctx, dep.Name, dep.Namespace)
+
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseCompleted))
+		}, 20*time.Second, interval).Should(Succeed())
+	})
 })

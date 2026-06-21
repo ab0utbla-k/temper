@@ -45,13 +45,14 @@ type Target struct {
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 }
 
-// +kubebuilder:validation:Enum=pod-kill
+// +kubebuilder:validation:Enum=pod-kill;node-drain
 
 // ScenarioType identifies the kind of fault to inject.
 type ScenarioType string
 
 const (
-	ScenarioTypePodKill ScenarioType = "pod-kill"
+	ScenarioTypePodKill   ScenarioType = "pod-kill"
+	ScenarioTypeNodeDrain ScenarioType = "node-drain"
 )
 
 // PodKillConfig configures the pod-kill scenario.
@@ -133,6 +134,11 @@ const (
 	// AnnotationHaltReason is the annotation key set by the safeguard watcher to signal
 	// that the trial should be halted. The trial controller reads and removes it.
 	AnnotationHaltReason = "temper.io/halt-reason"
+
+	// AnnotationCordonedBy is the annotation key the node-drain scenario sets on a
+	// Node it cordons, recording the owning trial (namespace/name). Revert reads it
+	// to un-cordon only the nodes this trial cordoned.
+	AnnotationCordonedBy = "temper.io/cordoned-by"
 
 	// LabelCronTrial is the label set by the CronTrial controller on every
 	// Trial it creates. Metrics use its value as a bounded source

@@ -96,6 +96,7 @@ spec:
                       description: type selects which fault to inject.
                       enum:
                       - pod-kill
+                      - node-drain
                       type: string
                   required:
                   - duration

@@ -35,6 +35,22 @@ type RecoveryProbe struct {
 	Query *QueryProbe
 }
 
+// Result reports what a scenario's Inject did. Ignored when Inject errors.
+type Result struct {
+	// PodsAffected is how many pods Inject acted on (killed, evicted, …).
+	PodsAffected int
+
+	// Findings are noteworthy conditions that are NOT failures (e.g. a
+	// PDB-blocked eviction). The controller surfaces each as an event + status.
+	Findings []Finding
+}
+
+// Finding is one noteworthy, non-fatal condition from an injection.
+type Finding struct {
+	Pod    string
+	Reason string
+}
+
 // Scenario defines the contract for all fault injection types.
 //
 // Callers persist injection intent (Status.InjectedAt) before calling Inject,
@@ -42,7 +58,7 @@ type RecoveryProbe struct {
 // second injection. Implementations can assume at-most-once Inject per run.
 type Scenario interface {
 	// Inject applies the fault. It must be safe to retry on failure.
-	Inject(ctx context.Context, target Target) error
+	Inject(ctx context.Context, target Target) (Result, error)
 
 	// Revert undoes the fault. It must be idempotent and safe to call
 	// even if Inject was never called or already reverted.
