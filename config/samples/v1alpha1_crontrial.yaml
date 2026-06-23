@@ -4,6 +4,12 @@ metadata:
   labels:
     app.kubernetes.io/name: temper
     app.kubernetes.io/managed-by: kustomize
-  name: crontrial-sample
+  name: nightly-pod-kill
 spec:
-  # TODO(user): Add fields here
+  trialRef: pod-kill-sample
+  schedule: "0 2 * * 1-5"
+  timezone: UTC
+  concurrencyPolicy: Forbid
+  safeguards:
+    minReplicasAvailable: 2
+    maxUnavailable: 1
