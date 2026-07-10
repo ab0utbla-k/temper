@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -52,10 +51,9 @@ func (p *PodKill) Revert(_ context.Context, _ Target) error {
 }
 
 func (p *PodKill) RecoveryProbe() RecoveryProbe {
+	// Available=True tolerates partial disruption (it follows maxUnavailable),
+	// so it would report instant recovery. Full strength is the honest signal.
 	return RecoveryProbe{
-		Condition: &ConditionProbe{
-			Type:   "Available",
-			Status: metav1.ConditionTrue,
-		},
+		WorkloadReady: &WorkloadReadyProbe{},
 	}
 }

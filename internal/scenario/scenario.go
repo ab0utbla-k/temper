@@ -25,14 +25,22 @@ type QueryProbe struct {
 	Query string
 }
 
+// WorkloadReadyProbe reports recovery when the target is back to full
+// strength: all desired replicas ready and the observed status current.
+// Unlike the Available condition, it does not tolerate partial disruption.
+type WorkloadReadyProbe struct{}
+
 // RecoveryProbe defines how to detect that the system recovered.
-// Exactly one of Condition or Query must be set.
+// Exactly one of Condition, Query, or WorkloadReady must be set.
 type RecoveryProbe struct {
 	// Condition watches a Kubernetes resource condition (e.g., Deployment Available=True).
 	Condition *ConditionProbe
 
 	// Query checks a PromQL query result (e.g., redis_connected_clients > 0).
 	Query *QueryProbe
+
+	// WorkloadReady waits for readyReplicas == desired with current status.
+	WorkloadReady *WorkloadReadyProbe
 }
 
 // Result reports what a scenario's Inject did. Ignored when Inject errors.
