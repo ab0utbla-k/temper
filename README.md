@@ -1,31 +1,181 @@
 # temper
 
-> "Out of chaos, find simplicity." — Bruce Lee
+temper is a Kubernetes operator for small, controlled failure tests.
 
-Chaos engineering operator for Kubernetes. Verify that services handle failure gracefully — not just in theory, but in practice.
-
-- **Adaptive safeguards** — seasonal baselines (mean ± n·σ by hour-of-day × weekday); halts on real deviation from the learned pattern, not a static threshold
-- **Capability-scoped agent** — no `privileged: true`; opt-in `NET_ADMIN`/`SYS_TIME` only for scenarios that need kernel access
-- **Recovery-time regression detection** — MTTR tracked per (service, scenario); flags when recovery exceeds the learned baseline
-- **Focused scope** — a handful of scenarios, easy to audit and trust
-- **GitOps-friendly** — just CRDs and a controller, no UI, no hub
+It runs a `Trial` against a Deployment, watches how the workload behaves, and writes the result back to Kubernetes status and metrics. The project is meant to stay simple: CRDs, a controller, events, and Prometheus metrics. No UI is required.
 
 ## Status
 
-Work in progress. Not ready for production use.
+Work in progress. Do not use temper in production yet.
+
+Current state:
+
+- `Trial` CRD for manual test runs
+- `CronTrial` CRD for scheduled tests
+- `pod-kill` scenario
+- basic `node-drain` scenario
+- safeguard checks for replica availability, Alertmanager alerts, and static PromQL thresholds
+- Prometheus metrics from the controller
+
+## Why this exists
+
+Many teams want to test resilience, but they do not want a large chaos platform with many CRDs, a UI, and a privileged node agent.
+
+temper takes a smaller path:
+
+- define the test in Kubernetes YAML
+- run only a few useful scenarios
+- stop tests when safeguards say the system is unhealthy
+- record what happened in status, events, and metrics
+- keep the system easy to read and review
+
+## API overview
+
+### Trial
+
+A `Trial` runs one or more scenarios against a target Deployment.
+
+```yaml
+apiVersion: temper.io/v1alpha1
+kind: Trial
+metadata:
+  name: payment-pod-kill
+  namespace: demo
+spec:
+  target:
+    kind: Deployment
+    name: payment
+  scenarios:
+    - type: pod-kill
+      duration: 30s
+      podKill:
+        count: 1
+```
+
+### CronTrial
+
+A `CronTrial` creates Trial runs from a schedule. It can also define safeguards.
+
+```yaml
+apiVersion: temper.io/v1alpha1
+kind: CronTrial
+metadata:
+  name: payment-nightly
+  namespace: demo
+spec:
+  trialRef: payment-pod-kill
+  schedule: "0 2 * * 1-5"
+  timezone: UTC
+  concurrencyPolicy: Forbid
+  safeguards:
+    minReplicasAvailable: 2
+    maxUnavailable: 1
+```
+
+## Scenarios
+
+### pod-kill
+
+Deletes one or more pods owned by the target Deployment. Kubernetes creates replacement pods. temper measures recovery after the injection.
+
+### node-drain
+
+Cordons one node that hosts target pods and evicts those pods through the Kubernetes Eviction API. This respects PodDisruptionBudgets.
+
+This scenario is experimental.
+
+## Safeguards
+
+Safeguards can stop a scheduled Trial before or during a run.
+
+Supported checks:
+
+- minimum available replicas
+- maximum unavailable replicas
+- firing Alertmanager alerts that match labels
+- static PromQL threshold checks
+
+When a safeguard halts a Trial, temper records a halt reason and emits metrics.
+
+## Metrics
+
+The controller exports Prometheus metrics such as:
+
+- `temper_trials_total`
+- `temper_scenarios_executed_total`
+- `temper_pods_killed_total`
+- `temper_recovery_time_seconds`
+- `temper_trials_halted_total`
+- `temper_pods_evicted_total`
+- `temper_evictions_blocked_total`
+
+Metrics are served by the controller manager. The default Kubebuilder metrics setup uses HTTPS and Kubernetes auth.
+
+## Development
+
+Requirements:
+
+- Go
+- kubectl
+- kind, for end-to-end tests and node-drain testing
+- Docker or another container tool, for building the manager image
+
+Common commands:
+
+```bash
+make test
+make lint
+make run
+```
+
+Regenerate Kubernetes manifests and generated Go code after changing API types or kubebuilder markers:
+
+```bash
+make manifests generate
+```
+
+Run e2e tests against an isolated kind cluster:
+
+```bash
+make test-e2e
+```
+
+Build and deploy the controller image:
+
+```bash
+export IMG=<registry>/temper:<tag>
+make docker-build docker-push IMG=$IMG
+make deploy IMG=$IMG
+```
+
+Build one install YAML:
+
+```bash
+make build-installer IMG=<registry>/temper:<tag>
+```
+
+## Repository layout
+
+```text
+api/v1alpha1/              CRD types
+internal/controller/       Trial and CronTrial controllers
+internal/scenario/         scenario implementations
+internal/safeguard/        safeguard checks and watcher
+internal/metrics/          Prometheus metrics
+config/                    CRDs, RBAC, manager manifests, samples
+test/e2e/                  kind-based e2e tests
+```
+
+Generated files are not edited by hand:
+
+- `api/v1alpha1/zz_generated.deepcopy.go`
+- `config/crd/bases/*.yaml`
+- `config/rbac/role.yaml`
+
+Use `make generate` and `make manifests` instead.
 
 ## License
 
 Copyright 2026.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Licensed under the Apache License, Version 2.0. See the license text in this repository or at <https://www.apache.org/licenses/LICENSE-2.0>.

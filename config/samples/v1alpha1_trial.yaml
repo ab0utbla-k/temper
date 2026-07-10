@@ -4,6 +4,13 @@ metadata:
   labels:
     app.kubernetes.io/name: temper
     app.kubernetes.io/managed-by: kustomize
-  name: trial-sample
+  name: pod-kill-sample
 spec:
-  # TODO(user): Add fields here
+  target:
+    kind: Deployment
+    name: demo-app
+  scenarios:
+    - type: pod-kill
+      duration: 30s
+      podKill:
+        count: 1
