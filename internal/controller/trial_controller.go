@@ -236,40 +236,7 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 			return r.failTrial(ctx, trial, fmt.Sprintf("Inject %s: %v", spec.Type, err))
 		}
 
-		if trial.Status.Metrics == nil {
-			trial.Status.Metrics = &temperv1alpha1.TrialMetrics{}
-		}
-
-		var podsKilled int32
-		if spec.Type == temperv1alpha1.ScenarioTypePodKill {
-			podsKilled = int32(result.PodsAffected)
-			trial.Status.Metrics.TotalPodsKilled += podsKilled
-		}
-
-		if err := r.Status().Update(ctx, trial); err != nil {
-			return ctrl.Result{}, fmt.Errorf("update status after inject: %w", err)
-		}
-		r.Recorder.Eventf(trial, nil, "Normal", "Injected", "Injected",
-			"Injected scenario %s (%d/%d)", spec.Type, idx+1, len(trial.Spec.Scenarios))
-
-		metrics.ScenariosExecutedTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), string(spec.Type)).Inc()
-		if podsKilled > 0 {
-			metrics.PodsKilledTotal.WithLabelValues(trial.Namespace, sourceLabel(trial)).Add(float64(podsKilled))
-		}
-
-		if spec.Type == temperv1alpha1.ScenarioTypeNodeDrain {
-			if result.PodsAffected > 0 {
-				metrics.PodsEvictedTotal.WithLabelValues(trial.Namespace, sourceLabel(trial)).Add(float64(result.PodsAffected))
-			}
-
-			for _, f := range result.Findings {
-				r.Recorder.Eventf(trial, nil, "Warning", "EvictionBlocked", "EvictionBlocked",
-					"Pod %s eviction blocked: %s", f.Pod, f.Reason)
-				metrics.EvictionsBlockedTotal.WithLabelValues(trial.Namespace, sourceLabel(trial)).Inc()
-			}
-		}
-
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		return r.recordInjectResult(ctx, trial, spec, result, idx)
 	}
 
 	// State 2/3: Already injected — check duration.
@@ -340,12 +307,70 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 	return ctrl.Result{RequeueAfter: pause}, nil
 }
 
+// recordInjectResult persists the post-inject status and emits the scenario's
+// events and metrics.
+func (r *TrialReconciler) recordInjectResult(
+	ctx context.Context,
+	trial *temperv1alpha1.Trial,
+	spec temperv1alpha1.Scenario,
+	result scenario.Result,
+	idx int,
+) (ctrl.Result, error) {
+	if trial.Status.Metrics == nil {
+		trial.Status.Metrics = &temperv1alpha1.TrialMetrics{}
+	}
+
+	var podsKilled int32
+	if spec.Type == temperv1alpha1.ScenarioTypePodKill {
+		podsKilled = int32(result.PodsAffected)
+		trial.Status.Metrics.TotalPodsKilled += podsKilled
+	}
+
+	if err := r.Status().Update(ctx, trial); err != nil {
+		return ctrl.Result{}, fmt.Errorf("update status after inject: %w", err)
+	}
+	r.Recorder.Eventf(trial, nil, "Normal", "Injected", "Injected",
+		"Injected scenario %s (%d/%d)", spec.Type, idx+1, len(trial.Spec.Scenarios))
+
+	metrics.ScenariosExecutedTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), string(spec.Type)).Inc()
+	if podsKilled > 0 {
+		metrics.PodsKilledTotal.WithLabelValues(trial.Namespace, sourceLabel(trial)).Add(float64(podsKilled))
+	}
+
+	if spec.Type == temperv1alpha1.ScenarioTypeNodeDrain {
+		if result.PodsAffected > 0 {
+			metrics.PodsEvictedTotal.WithLabelValues(trial.Namespace, sourceLabel(trial)).Add(float64(result.PodsAffected))
+		}
+
+		for _, f := range result.Findings {
+			r.Recorder.Eventf(trial, nil, "Warning", "EvictionBlocked", "EvictionBlocked",
+				"Pod %s eviction blocked: %s", f.Pod, f.Reason)
+			metrics.EvictionsBlockedTotal.WithLabelValues(trial.Namespace, sourceLabel(trial)).Inc()
+		}
+	}
+
+	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+}
+
 func (r *TrialReconciler) failTrial(ctx context.Context, trial *temperv1alpha1.Trial, reason string) (ctrl.Result, error) {
+	// Record the reason before any step that can fail: on a revert or status
+	// error the retry loses this context (the next reconcile resumes the
+	// normal flow and may end the Trial Completed), and the event is then
+	// the only trace of the failure. Fail-intent persistence arrives with
+	// the Outcome field.
+	r.Recorder.Eventf(trial, nil, "Warning", "Failed", "Failed", reason)
+
+	// A terminal Trial is never reconciled again, so going terminal with an
+	// active injection would leak it (e.g. a node stays cordoned). Revert
+	// first; on error requeue instead.
+	if err := r.revertIfActive(ctx, trial); err != nil {
+		return ctrl.Result{}, fmt.Errorf("revert before fail: %w", err)
+	}
+
 	trial.Status.Phase = temperv1alpha1.TrialPhaseFailed
 	if err := r.Status().Update(ctx, trial); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status to Failed: %w", err)
 	}
-	r.Recorder.Eventf(trial, nil, "Warning", "Failed", "Failed", reason)
 	metrics.TrialsTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), "failed").Inc()
 	metrics.TrialDurationSeconds.WithLabelValues(trial.Namespace, sourceLabel(trial)).Observe(time.Since(trial.CreationTimestamp.Time).Seconds())
 	return ctrl.Result{}, nil
