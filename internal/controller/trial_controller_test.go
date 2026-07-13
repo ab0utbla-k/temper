@@ -5,6 +5,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -36,7 +37,7 @@ var _ = Describe("Trial Controller", func() {
 			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseRunning))
 		}, timeout, interval).Should(Succeed())
 
-		patchDeploymentAvailable(ctx, dep.Name, dep.Namespace)
+		patchDeploymentStatus(ctx, dep.Name, dep.Namespace, 3, false)
 
 		Eventually(func(g Gomega) {
 			var got temperv1alpha1.Trial
@@ -45,6 +46,53 @@ var _ = Describe("Trial Controller", func() {
 			g.Expect(got.Status.Metrics).NotTo(BeNil())
 			g.Expect(got.Status.Metrics.TotalPodsKilled).To(BeNumerically(">", 0))
 		}, 20*time.Second, interval).Should(Succeed())
+	})
+
+	It("should record recovery only at full strength with current status", func() {
+		dep := createDeployment(ctx, "dep-recovery", "default", 3)
+		createRunningPods(ctx, dep)
+		// Duration long enough for the whole timeline below to fit in the run.
+		trial := createTrial(ctx, "exp-recovery", "default", dep.Name, 60*time.Second)
+		key := client.ObjectKeyFromObject(trial)
+
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.Status.InjectedAt).NotTo(BeNil())
+		}, timeout, interval).Should(Succeed())
+
+		// Degraded: 2 of 3 ready. The old Available=True signal would already
+		// call this recovered; the WorkloadReady probe must not.
+		patchDeploymentStatus(ctx, dep.Name, dep.Namespace, 2, false)
+
+		// Window covers the 5s recovery grace period plus a poll round.
+		Consistently(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.Status.RecoveredAt).To(BeNil())
+		}, 8*time.Second, interval).Should(Succeed())
+
+		// Full strength, but the status describes an older generation — the
+		// numbers can't be trusted yet, so still no recovery.
+		patchDeploymentStatus(ctx, dep.Name, dep.Namespace, 3, true)
+
+		Consistently(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.Status.RecoveredAt).To(BeNil())
+		}, 6*time.Second, interval).Should(Succeed())
+
+		// Full strength with a current status — this is recovery.
+		patchDeploymentStatus(ctx, dep.Name, dep.Namespace, 3, false)
+
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.Status.RecoveredAt).NotTo(BeNil())
+		}, 15*time.Second, interval).Should(Succeed())
+
+		// Don't leave the 60s trial running under the other specs.
+		Expect(k8sClient.Delete(ctx, trial)).To(Succeed())
 	})
 
 	It("should revert on deletion while running", func() {
@@ -126,6 +174,27 @@ var _ = Describe("Trial Controller", func() {
 		Consistently(failInjectCalls.Load, 2*time.Second, interval).Should(Equal(int32(1)))
 	})
 
+	It("should leave no cordon behind when Inject fails after mutating", func() {
+		createNode(ctx, cordonLeakNode)
+		dep := createDeployment(ctx, failAfterCordonTarget, "default", 1)
+		createRunningPods(ctx, dep)
+		trial := createTrial(ctx, "exp-cordon-leak", "default", dep.Name, 5*time.Second)
+
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trial), &got)).To(Succeed())
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseFailed))
+		}, timeout, interval).Should(Succeed())
+
+		// The item-1 regression: failTrial must revert before going terminal,
+		// so the node cordoned by the failed Inject ends up uncordoned.
+		Eventually(func(g Gomega) {
+			var node corev1.Node
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: cordonLeakNode}, &node)).To(Succeed())
+			g.Expect(node.Spec.Unschedulable).To(BeFalse())
+		}, timeout, interval).Should(Succeed())
+	})
+
 	It("should fail when target deployment doesn't exist", func() {
 		trial := createTrial(ctx, "exp-no-target", "default", "nonexistent", 5*time.Second)
 
@@ -152,7 +221,7 @@ var _ = Describe("Trial Controller", func() {
 
 		// Once pods are running it injects and runs to completion.
 		createRunningPods(ctx, dep)
-		patchDeploymentAvailable(ctx, dep.Name, dep.Namespace)
+		patchDeploymentStatus(ctx, dep.Name, dep.Namespace, 1, false)
 
 		Eventually(func(g Gomega) {
 			var got temperv1alpha1.Trial

@@ -117,10 +117,9 @@ func (n *NodeDrain) Revert(ctx context.Context, _ Target) error {
 }
 
 func (n *NodeDrain) RecoveryProbe() RecoveryProbe {
+	// Same rationale as pod-kill: evicted pods must be rescheduled and ready
+	// again everywhere, not merely "still above the availability floor".
 	return RecoveryProbe{
-		Condition: &ConditionProbe{
-			Type:   "Available",
-			Status: metav1.ConditionTrue,
-		},
+		WorkloadReady: &WorkloadReadyProbe{},
 	}
 }

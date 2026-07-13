@@ -25,6 +25,12 @@ const (
 	// failInjectTarget marks a deployment whose scenario Inject always fails
 	// (see newTestScenario, installed suite-wide in BeforeSuite).
 	failInjectTarget = "dep-fail-inject"
+
+	// failAfterCordonTarget marks a deployment whose scenario Inject cordons
+	// cordonLeakNode and THEN fails — the post-mutation failure mode that
+	// failTrial must clean up (the item-1 cordon-leak regression).
+	failAfterCordonTarget = "dep-fail-after-cordon"
+	cordonLeakNode        = "node-cordon-leak"
 )
 
 var failInjectCalls atomic.Int32
@@ -36,22 +42,46 @@ func newTestScenario(c client.Client, spec temperv1alpha1.Scenario, owner string
 	if err != nil {
 		return nil, err
 	}
-	return &failInjectScenario{inner: s}, nil
+	return &failInjectScenario{inner: s, c: c}, nil
 }
 
 type failInjectScenario struct {
 	inner scenario.Scenario
+	c     client.Client
 }
 
 func (f *failInjectScenario) Inject(ctx context.Context, target scenario.Target) (scenario.Result, error) {
-	if target.Name == failInjectTarget {
+	switch target.Name {
+	case failInjectTarget:
 		failInjectCalls.Add(1)
 		return scenario.Result{}, errors.New("inject failed by test")
+	case failAfterCordonTarget:
+		// Mutate first, then fail — models an eviction error after the cordon.
+		var node corev1.Node
+		if err := f.c.Get(ctx, client.ObjectKey{Name: cordonLeakNode}, &node); err != nil {
+			return scenario.Result{}, err
+		}
+		node.Spec.Unschedulable = true
+		if err := f.c.Update(ctx, &node); err != nil {
+			return scenario.Result{}, err
+		}
+		return scenario.Result{}, errors.New("inject failed after cordon by test")
 	}
 	return f.inner.Inject(ctx, target)
 }
 
 func (f *failInjectScenario) Revert(ctx context.Context, target scenario.Target) error {
+	if target.Name == failAfterCordonTarget {
+		var node corev1.Node
+		if err := f.c.Get(ctx, client.ObjectKey{Name: cordonLeakNode}, &node); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if !node.Spec.Unschedulable {
+			return nil
+		}
+		node.Spec.Unschedulable = false
+		return f.c.Update(ctx, &node)
+	}
 	return f.inner.Revert(ctx, target)
 }
 
@@ -132,17 +162,29 @@ func createNode(ctx context.Context, name string) {
 	Expect(k8sClient.Create(ctx, node)).To(Succeed())
 }
 
-func patchDeploymentAvailable(ctx context.Context, name, namespace string) {
+// patchDeploymentStatus reports readyReplicas in the Deployment status (envtest
+// has no deployment controller to do it). stale=true marks the status as
+// describing an older spec generation — the WorkloadReady probe must ignore
+// numbers from a stale status.
+func patchDeploymentStatus(ctx context.Context, name, namespace string, readyReplicas int32, stale bool) {
 	var dep appsv1.Deployment
 	Expect(k8sClient.Get(ctx, client.ObjectKey{
 		Namespace: namespace,
 		Name:      name,
 	}, &dep)).To(Succeed())
 
-	dep.Status.Conditions = append(dep.Status.Conditions, appsv1.DeploymentCondition{
-		Type:   appsv1.DeploymentAvailable,
-		Status: corev1.ConditionTrue,
-	})
+	dep.Status.ObservedGeneration = dep.Generation
+	if stale {
+		dep.Status.ObservedGeneration = dep.Generation - 1
+	}
+	// The API server rejects readyReplicas > replicas, so report all desired
+	// pods as created and readyReplicas of them as ready.
+	desired := int32(1)
+	if dep.Spec.Replicas != nil {
+		desired = *dep.Spec.Replicas
+	}
+	dep.Status.Replicas = desired
+	dep.Status.ReadyReplicas = readyReplicas
 
 	Expect(k8sClient.Status().Update(ctx, &dep)).To(Succeed())
 }

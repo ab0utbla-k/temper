@@ -23,7 +23,6 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -246,7 +245,12 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 	if remaining > 0 {
 		// Still within duration — poll for recovery.
 		if trial.Status.RecoveredAt == nil && time.Since(trial.Status.InjectedAt.Time) >= recoveryGracePeriod {
-			if recovered, err := r.checkRecovery(ctx, trial); err != nil {
+			s, err := r.scenarioFor(trial, spec)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("build scenario for recovery probe: %w", err)
+			}
+
+			if recovered, err := r.checkRecovery(ctx, trial, s.RecoveryProbe()); err != nil {
 				return ctrl.Result{}, fmt.Errorf("check recovery: %w", err)
 			} else if recovered {
 				trial.Status.RecoveredAt = new(metav1.Now())
@@ -376,7 +380,11 @@ func (r *TrialReconciler) failTrial(ctx context.Context, trial *temperv1alpha1.T
 	return ctrl.Result{}, nil
 }
 
-func (r *TrialReconciler) checkRecovery(ctx context.Context, trial *temperv1alpha1.Trial) (bool, error) {
+func (r *TrialReconciler) checkRecovery(
+	ctx context.Context,
+	trial *temperv1alpha1.Trial,
+	probe scenario.RecoveryProbe,
+) (bool, error) {
 	if trial.Spec.Target.Name == nil {
 		return false, nil
 	}
@@ -389,12 +397,29 @@ func (r *TrialReconciler) checkRecovery(ctx context.Context, trial *temperv1alph
 		return false, fmt.Errorf("get deployment: %w", err)
 	}
 
-	for _, cond := range dep.Status.Conditions {
-		if cond.Type == appsv1.DeploymentAvailable && cond.Status == corev1.ConditionTrue {
-			return true, nil
+	switch {
+	case probe.WorkloadReady != nil:
+		if dep.Status.ObservedGeneration < dep.Generation {
+			return false, nil
 		}
+
+		desired := int32(1)
+		if dep.Spec.Replicas != nil {
+			desired = *dep.Spec.Replicas
+		}
+		return dep.Status.ReadyReplicas == desired, nil
+	case probe.Condition != nil:
+		for _, cond := range dep.Status.Conditions {
+			if string(cond.Type) == probe.Condition.Type && string(cond.Status) == string(probe.Condition.Status) {
+				return true, nil
+			}
+		}
+		return false, nil
+	case probe.Query != nil:
+		return false, fmt.Errorf("query recovery probes are not wired yet")
+	default:
+		return false, fmt.Errorf("recovery probe has no kind set")
 	}
-	return false, nil
 }
 
 func buildScenario(c client.Client, spec temperv1alpha1.Scenario, owner string) (scenario.Scenario, error) {

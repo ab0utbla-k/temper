@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	temperv1alpha1 "github.com/ab0utbla-k/temper/api/v1alpha1"
 )
@@ -86,6 +87,9 @@ var _ = BeforeSuite(func() {
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme.Scheme,
+		// No metrics listener in tests: the default binds fixed :8080, which
+		// makes two concurrent test runs collide.
+		Metrics: metricsserver.Options{BindAddress: "0"},
 	})
 	Expect(err).NotTo(HaveOccurred())
 
@@ -105,6 +109,9 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	go func() {
+		// Without this, a failed assertion in the goroutine escapes Ginkgo as
+		// a raw panic instead of a test failure.
+		defer GinkgoRecover()
 		Expect(mgr.Start(ctx)).To(Succeed())
 	}()
 })
