@@ -51,6 +51,12 @@ type Result struct {
 	// Findings are noteworthy conditions that are NOT failures (e.g. a
 	// PDB-blocked eviction). The controller surfaces each as an event + status.
 	Findings []Finding
+
+	// Incomplete reports that Inject has more work to do (e.g. evictions
+	// still blocked by a PDB). The controller will call Inject again later;
+	// a scenario that sets this must make repeated calls safe. A scenario
+	// that never sets it is never called twice.
+	Incomplete bool
 }
 
 // Finding is one noteworthy, non-fatal condition from an injection.
@@ -61,9 +67,13 @@ type Finding struct {
 
 // Scenario defines the contract for all fault injection types.
 //
-// Callers persist injection intent (Status.InjectedAt) before calling Inject,
-// so a crash or failed status write after a successful Inject never causes a
-// second injection. Implementations can assume at-most-once Inject per run.
+// Callers persist injection intent (Status.InjectedAt) before the first
+// Inject call, so a crash or failed status write after a successful Inject
+// never causes a second injection. After that first call, Inject is called
+// again only while the scenario reports Result.Incomplete — such scenarios
+// must make every repeated step safe (idempotent cordon, retryable eviction).
+// A scenario that never reports Incomplete keeps the plain at-most-once
+// guarantee.
 type Scenario interface {
 	// Inject applies the fault. It must be safe to retry on failure.
 	Inject(ctx context.Context, target Target) (Result, error)

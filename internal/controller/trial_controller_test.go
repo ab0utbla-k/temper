@@ -29,7 +29,10 @@ var _ = Describe("Trial Controller", func() {
 	It("should run pod-kill and complete", func() {
 		dep := createDeployment(ctx, "dep-happy", "default", 3)
 		createRunningPods(ctx, dep)
-		trial := createTrial(ctx, "exp-happy", "default", dep.Name, 5*time.Second)
+		// The duration must comfortably exceed the 5s recovery grace period:
+		// polling starts only after it, and a trial that ends without one
+		// successful recovery poll gets Outcome=Failed.
+		trial := createTrial(ctx, "exp-happy", "default", dep.Name, 15*time.Second)
 
 		Eventually(func(g Gomega) {
 			var got temperv1alpha1.Trial
@@ -43,9 +46,10 @@ var _ = Describe("Trial Controller", func() {
 			var got temperv1alpha1.Trial
 			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trial), &got)).To(Succeed())
 			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseCompleted))
+			g.Expect(got.Status.Outcome).To(Equal(temperv1alpha1.OutcomePassed))
 			g.Expect(got.Status.Metrics).NotTo(BeNil())
 			g.Expect(got.Status.Metrics.TotalPodsKilled).To(BeNumerically(">", 0))
-		}, 20*time.Second, interval).Should(Succeed())
+		}, 25*time.Second, interval).Should(Succeed())
 	})
 
 	It("should record recovery only at full strength with current status", func() {
@@ -89,6 +93,14 @@ var _ = Describe("Trial Controller", func() {
 			var got temperv1alpha1.Trial
 			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
 			g.Expect(got.Status.RecoveredAt).NotTo(BeNil())
+
+			// The per-scenario row survives with the same timeline.
+			g.Expect(got.Status.ScenarioResults).To(HaveLen(1))
+			res := got.Status.ScenarioResults[0]
+			g.Expect(res.Type).To(Equal(temperv1alpha1.ScenarioTypePodKill))
+			g.Expect(res.InjectedAt.IsZero()).To(BeFalse())
+			g.Expect(res.RecoveredAt).NotTo(BeNil())
+			g.Expect(res.Findings).To(BeEmpty())
 		}, 15*time.Second, interval).Should(Succeed())
 
 		// Don't leave the 60s trial running under the other specs.
@@ -134,6 +146,7 @@ var _ = Describe("Trial Controller", func() {
 			var got temperv1alpha1.Trial
 			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
 			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseHalted))
+			g.Expect(got.Status.Outcome).To(Equal(temperv1alpha1.OutcomeHalted))
 			g.Expect(got.Annotations).NotTo(HaveKey(temperv1alpha1.AnnotationHaltReason))
 			g.Expect(got.Annotations).NotTo(HaveKey(temperv1alpha1.AnnotationHaltCode))
 			g.Expect(got.Status.HaltReason).NotTo(BeNil())
@@ -165,6 +178,8 @@ var _ = Describe("Trial Controller", func() {
 			var got temperv1alpha1.Trial
 			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trial), &got)).To(Succeed())
 			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseFailed))
+			// A tool error is not an experiment verdict: Outcome stays empty.
+			g.Expect(got.Status.Outcome).To(BeEmpty())
 			// Ghost state: a failed-but-marked attempt must stay marked, or the
 			// next reconcile would re-enter the inject path.
 			g.Expect(got.Status.InjectedAt).NotTo(BeNil())

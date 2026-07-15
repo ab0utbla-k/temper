@@ -162,6 +162,22 @@ const (
 	TrialPhaseHalted    TrialPhase = "Halted"
 )
 
+// TrialOutcome is what the experiment concluded — independent of TrialPhase,
+// which says whether the controller ran it. A tool error has no outcome.
+// +kubebuilder:validation:Enum=Passed;Blocked;Failed;Halted
+type TrialOutcome string
+
+const (
+	// OutcomePassed means the disruption ran and recovery met the deadline.
+	OutcomePassed TrialOutcome = "Passed"
+	// OutcomeBlocked means a PodDisruptionBudget refused the disruption.
+	OutcomeBlocked TrialOutcome = "Blocked"
+	// OutcomeFailed means the workload did not recover in time.
+	OutcomeFailed TrialOutcome = "Failed"
+	// OutcomeHalted means a safeguard stopped the run.
+	OutcomeHalted TrialOutcome = "Halted"
+)
+
 // TrialMetrics tracks aggregate results of the trial.
 type TrialMetrics struct {
 	// totalPodsKilled is the number of pods deleted across all runs.
@@ -170,6 +186,36 @@ type TrialMetrics struct {
 	// meanRecoveryTime is the average time for the target to recover after injection.
 	// +optional
 	MeanRecoveryTime *metav1.Duration `json:"meanRecoveryTime,omitempty"`
+}
+
+// ScenarioResult records what one scenario run concluded.
+type ScenarioResult struct {
+	// type is the scenario that ran.
+	Type ScenarioType `json:"type"`
+
+	// injectedAt is when the fault was injected.
+	InjectedAt metav1.Time `json:"injectedAt"`
+
+	// recoveredAt is when the recovery probe first succeeded. Unset means the
+	// target never recovered within the scenario's duration.
+	// +optional
+	RecoveredAt *metav1.Time `json:"recoveredAt,omitempty"`
+
+	// findings are noteworthy, non-fatal conditions observed during the run
+	// (e.g. a PDB-blocked eviction).
+	// +optional
+	Findings []Finding `json:"findings,omitempty"`
+}
+
+// Finding is one noteworthy, non-fatal condition observed during a scenario run.
+type Finding struct {
+	// reason is a machine-readable token identifying the finding kind
+	// (e.g. EvictionBlocked).
+	Reason string `json:"reason"`
+
+	// message is a human-readable explanation of the finding.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // TrialStatus defines the observed state of Trial.
@@ -192,6 +238,11 @@ type TrialStatus struct {
 	// +optional
 	Phase TrialPhase `json:"phase,omitempty"`
 
+	// outcome is what the experiment concluded. Empty until a verdict exists,
+	// and never set when the controller itself failed (phase Failed).
+	// +optional
+	Outcome TrialOutcome `json:"outcome,omitempty"`
+
 	// metrics tracks aggregate trial results.
 	// +optional
 	Metrics *TrialMetrics `json:"metrics,omitempty"`
@@ -207,6 +258,10 @@ type TrialStatus struct {
 	// +optional
 	RecoveredAt *metav1.Time `json:"recoveredAt,omitempty"`
 
+	// scenarioResults records the per-scenario timeline, in execution order.
+	// +optional
+	ScenarioResults []ScenarioResult `json:"scenarioResults,omitempty"`
+
 	// haltReason explains why a safeguard stopped the trial. Only set when phase is Halted.
 	// +optional
 	HaltReason *string `json:"haltReason,omitempty"`
@@ -215,6 +270,7 @@ type TrialStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Outcome",type=string,JSONPath=`.status.outcome`
 // +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.target.name`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

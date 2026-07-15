@@ -116,6 +116,7 @@ func (r *TrialReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 
 		trial.Status.Phase = temperv1alpha1.TrialPhaseHalted
+		trial.Status.Outcome = temperv1alpha1.OutcomeHalted
 		trial.Status.HaltReason = &reason
 		if err := r.Status().Update(ctx, &trial); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update status to Halted: %w", err)
@@ -190,6 +191,19 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 	if idx >= len(trial.Spec.Scenarios) {
 		// All scenarios done.
 		trial.Status.Phase = temperv1alpha1.TrialPhaseCompleted
+
+		outcome := temperv1alpha1.OutcomePassed
+		if len(trial.Status.ScenarioResults) != len(trial.Spec.Scenarios) {
+			outcome = temperv1alpha1.OutcomeFailed
+		}
+		for _, res := range trial.Status.ScenarioResults {
+			if res.RecoveredAt == nil {
+				outcome = temperv1alpha1.OutcomeFailed
+				break
+			}
+		}
+		trial.Status.Outcome = outcome
+
 		if err := r.Status().Update(ctx, trial); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update status to Completed: %w", err)
 		}
@@ -254,6 +268,13 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 				return ctrl.Result{}, fmt.Errorf("check recovery: %w", err)
 			} else if recovered {
 				trial.Status.RecoveredAt = new(metav1.Now())
+
+				// The result row can be missing if the post-inject status write was
+				// lost - then there is nothing to fill, and completion will treat the
+				// scenario as unproven.
+				if n := len(trial.Status.ScenarioResults); n > 0 {
+					trial.Status.ScenarioResults[n-1].RecoveredAt = trial.Status.RecoveredAt
+				}
 
 				if err := r.Status().Update(ctx, trial); err != nil {
 					return ctrl.Result{}, fmt.Errorf("update status after recovery: %w", err)
@@ -329,6 +350,20 @@ func (r *TrialReconciler) recordInjectResult(
 		podsKilled = int32(result.PodsAffected)
 		trial.Status.Metrics.TotalPodsKilled += podsKilled
 	}
+
+	findings := make([]temperv1alpha1.Finding, 0, len(result.Findings))
+	for _, f := range result.Findings {
+		findings = append(findings, temperv1alpha1.Finding{
+			Reason:  "EvictionBlocked",
+			Message: fmt.Sprintf("Pod %s eviction blocked: %s", f.Pod, f.Reason),
+		})
+	}
+
+	trial.Status.ScenarioResults = append(trial.Status.ScenarioResults, temperv1alpha1.ScenarioResult{
+		Type:       spec.Type,
+		InjectedAt: *trial.Status.InjectedAt,
+		Findings:   findings,
+	})
 
 	if err := r.Status().Update(ctx, trial); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status after inject: %w", err)
