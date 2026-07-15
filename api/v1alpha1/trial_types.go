@@ -67,6 +67,14 @@ type PodKillConfig struct {
 	Interval *metav1.Duration `json:"interval,omitempty"`
 }
 
+// NodeDrainConfig configures the node-drain scenario.
+type NodeDrainConfig struct {
+	// nodeName pins the drain to this node. Empty means the scenario picks
+	// the node running the most target pods.
+	// +optional
+	NodeName string `json:"nodeName,omitempty"`
+}
+
 // Scenario defines a single fault injection step.
 type Scenario struct {
 	// type selects which fault to inject.
@@ -80,6 +88,11 @@ type Scenario struct {
 	// podKill configures the pod-kill scenario. Required when type is "pod-kill".
 	// +optional
 	PodKill *PodKillConfig `json:"podKill,omitempty"`
+
+	// nodeDrain configures the node-drain scenario. Only read when type is
+	// "node-drain"; omitted means default behavior (drain the busiest node).
+	// +optional
+	NodeDrain *NodeDrainConfig `json:"nodeDrain,omitempty"`
 }
 
 // ExecutionMode controls how scenarios are run.
