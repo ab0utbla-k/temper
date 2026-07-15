@@ -47,6 +47,43 @@ var _ = Describe("NodeDrain scenario", func() {
 		Expect(nodeA.Annotations).NotTo(HaveKey(temperv1alpha1.AnnotationCordonedBy))
 	})
 
+	It("drains the pinned node instead of the busiest", func() {
+		createNode(ctx, "nd-pin-busy")
+		createNode(ctx, "nd-pin-target")
+		dep := createDeployment(ctx, "nd-pin-dep", "default", 3)
+		createRunningPodsOnNode(ctx, dep, "nd-pin-busy", 2, 0)   // busiest
+		createRunningPodsOnNode(ctx, dep, "nd-pin-target", 1, 2) // pinned
+
+		nd := &scenario.NodeDrain{Client: k8sClient, Owner: "default/nd-pin", NodeName: "nd-pin-target"}
+		target := scenario.Target{Name: dep.Name, Namespace: "default", Kind: "Deployment"}
+
+		result, err := nd.Inject(ctx, target)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.PodsAffected).To(Equal(1)) // only the pinned node's pod
+
+		var pinned corev1.Node
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "nd-pin-target"}, &pinned)).To(Succeed())
+		Expect(pinned.Spec.Unschedulable).To(BeTrue())
+
+		// The busiest node must be left alone — the pin wins over the fallback.
+		var busy corev1.Node
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "nd-pin-busy"}, &busy)).To(Succeed())
+		Expect(busy.Spec.Unschedulable).To(BeFalse())
+
+		Expect(nd.Revert(ctx, target)).To(Succeed())
+	})
+
+	It("errors when the pinned node does not exist", func() {
+		dep := createDeployment(ctx, "nd-pin-missing", "default", 1)
+		createRunningPods(ctx, dep)
+
+		nd := &scenario.NodeDrain{Client: k8sClient, Owner: "default/nd-pin-missing", NodeName: "nd-ghost"}
+		_, err := nd.Inject(ctx, scenario.Target{Name: dep.Name, Namespace: "default", Kind: "Deployment"})
+		Expect(err).To(HaveOccurred())
+		// The error must name the node, so a typo points at itself.
+		Expect(err.Error()).To(ContainSubstring("nd-ghost"))
+	})
+
 	It("Revert is a no-op when this trial cordoned nothing", func() {
 		nd := &scenario.NodeDrain{Client: k8sClient, Owner: "default/nd-never-ran"}
 		Expect(nd.Revert(ctx, scenario.Target{Namespace: "default"})).To(Succeed())

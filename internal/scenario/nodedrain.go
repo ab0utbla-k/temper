@@ -18,6 +18,9 @@ import (
 type NodeDrain struct {
 	Client client.Client
 	Owner  string
+	// NodeName pins the drain to this node. Empty means "pick the node
+	// running the most target pods."
+	NodeName string
 }
 
 func (n *NodeDrain) Inject(ctx context.Context, target Target) (Result, error) {
@@ -30,22 +33,26 @@ func (n *NodeDrain) Inject(ctx context.Context, target Target) (Result, error) {
 		return Result{}, err
 	}
 
-	byNode := make(map[string]int)
-	for _, pod := range running {
-		byNode[pod.Spec.NodeName]++
-	}
-
-	var busiest string
-	mostPods := 0
-	for node, count := range byNode {
-		if count > mostPods {
-			busiest, mostPods = node, count
+	drainNode := n.NodeName
+	if drainNode == "" {
+		byNode := make(map[string]int)
+		for _, pod := range running {
+			byNode[pod.Spec.NodeName]++
 		}
+
+		var busiest string
+		mostPods := 0
+		for node, count := range byNode {
+			if count > mostPods {
+				busiest, mostPods = node, count
+			}
+		}
+		drainNode = busiest
 	}
 
 	var node corev1.Node
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if err := n.Client.Get(ctx, client.ObjectKey{Name: busiest}, &node); err != nil {
+		if err := n.Client.Get(ctx, client.ObjectKey{Name: drainNode}, &node); err != nil {
 			return fmt.Errorf("get node: %w", err)
 		}
 
@@ -57,7 +64,7 @@ func (n *NodeDrain) Inject(ctx context.Context, target Target) (Result, error) {
 
 		return n.Client.Update(ctx, &node)
 	}); err != nil {
-		return Result{}, fmt.Errorf("cordon node: %w", err)
+		return Result{}, fmt.Errorf("cordon node %s: %w", drainNode, err)
 	}
 
 	running, err = runningTargetPods(ctx, n.Client, target)
@@ -69,7 +76,7 @@ func (n *NodeDrain) Inject(ctx context.Context, target Target) (Result, error) {
 	var findings []Finding
 
 	for _, pod := range running {
-		if pod.Spec.NodeName != busiest {
+		if pod.Spec.NodeName != drainNode {
 			continue
 		}
 

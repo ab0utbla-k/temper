@@ -78,6 +78,17 @@ spec:
                       description: duration is how long this scenario runs before
                         reverting.
                       type: string
+                    nodeDrain:
+                      description: |-
+                        nodeDrain configures the node-drain scenario. Only read when type is
+                        "node-drain"; omitted means default behavior (drain the busiest node).
+                      properties:
+                        nodeName:
+                          description: |-
+                            nodeName pins the drain to this node. Empty means the scenario picks
+                            the node running the most target pods.
+                          type: string
+                      type: object
                     podKill:
                       description: podKill configures the pod-kill scenario. Required
                         when type is "pod-kill".

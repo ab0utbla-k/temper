@@ -470,7 +470,15 @@ func buildScenario(c client.Client, spec temperv1alpha1.Scenario, owner string) 
 			Count:  count,
 		}, nil
 	case temperv1alpha1.ScenarioTypeNodeDrain:
-		return &scenario.NodeDrain{Client: c, Owner: owner}, nil
+		name := ""
+		if spec.NodeDrain != nil {
+			name = spec.NodeDrain.NodeName
+		}
+		return &scenario.NodeDrain{
+			Client:   c,
+			Owner:    owner,
+			NodeName: name,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported scenario type: %s", spec.Type)
 	}
