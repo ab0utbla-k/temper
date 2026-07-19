@@ -83,6 +83,11 @@ spec:
                         nodeDrain configures the node-drain scenario. Only read when type is
                         "node-drain"; omitted means default behavior (drain the busiest node).
                       properties:
+                        evictionTimeout:
+                          description: |-
+                            evictionTimeout is how long blocked evictions are retried before the
+                            trial concludes Blocked. Unset means 30s.
+                          type: string
                         nodeName:
                           description: |-
                             nodeName pins the drain to this node. Empty means the scenario picks
@@ -269,6 +274,11 @@ spec:
                 description: injectedAt is when the current scenario's fault was injected.
                 format: date-time
                 type: string
+              injectionIncomplete:
+                description: |-
+                  injectionIncomplete reports that the current scenario's Inject has
+                  work left (e.g. evictions blocked by a PDB) and will be called again.
+                type: boolean
               metrics:
                 description: metrics tracks aggregate trial results.
                 properties:

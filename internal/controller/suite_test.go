@@ -25,6 +25,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -90,6 +91,13 @@ var _ = BeforeSuite(func() {
 		// No metrics listener in tests: the default binds fixed :8080, which
 		// makes two concurrent test runs collide.
 		Metrics: metricsserver.Options{BindAddress: "0"},
+		// Node reads bypass the cache: an uncordon right after a cordon must
+		// see its own write, or the stale read skips the uncordon.
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				DisableFor: []client.Object{&corev1.Node{}},
+			},
+		},
 	})
 	Expect(err).NotTo(HaveOccurred())
 

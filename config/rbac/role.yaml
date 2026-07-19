@@ -42,6 +42,14 @@ rules:
   - create
   - patch
 - apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - temper.io
   resources:
   - crontrials

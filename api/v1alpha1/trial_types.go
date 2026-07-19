@@ -73,6 +73,11 @@ type NodeDrainConfig struct {
 	// the node running the most target pods.
 	// +optional
 	NodeName string `json:"nodeName,omitempty"`
+
+	// evictionTimeout is how long blocked evictions are retried before the
+	// trial concludes Blocked. Unset means 30s.
+	// +optional
+	EvictionTimeout *metav1.Duration `json:"evictionTimeout,omitempty"`
 }
 
 // Scenario defines a single fault injection step.
@@ -266,6 +271,11 @@ type TrialStatus struct {
 	// injectedAt is when the current scenario's fault was injected.
 	// +optional
 	InjectedAt *metav1.Time `json:"injectedAt,omitempty"`
+
+	// injectionIncomplete reports that the current scenario's Inject has
+	// work left (e.g. evictions blocked by a PDB) and will be called again.
+	// +optional
+	InjectionIncomplete bool `json:"injectionIncomplete,omitempty"`
 
 	// recoveredAt is when the target recovered from the current scenario's fault.
 	// +optional

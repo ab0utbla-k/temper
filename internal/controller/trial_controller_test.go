@@ -189,6 +189,62 @@ var _ = Describe("Trial Controller", func() {
 		Consistently(failInjectCalls.Load, 2*time.Second, interval).Should(Equal(int32(1)))
 	})
 
+	It("should conclude Blocked when evictions stay blocked past the timeout", func() {
+		createNode(ctx, blockedEvictionNode)
+		dep := createDeployment(ctx, blockedEvictionTarget, "default", 1)
+		createRunningPods(ctx, dep)
+		trial := createNodeDrainTrial(ctx, "exp-blocked", "default", dep.Name, 30*time.Second, 3*time.Second)
+		key := client.ObjectKeyFromObject(trial)
+
+		// While evictions are blocked, the retry flag is up.
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.Status.InjectionIncomplete).To(BeTrue())
+		}, timeout, interval).Should(Succeed())
+
+		// Past the eviction timeout: Blocked verdict, flag down, no cordon
+		// left, and the finding names the guilty PDB.
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseCompleted))
+			g.Expect(got.Status.Outcome).To(Equal(temperv1alpha1.OutcomeBlocked))
+			g.Expect(got.Status.InjectionIncomplete).To(BeFalse())
+
+			g.Expect(got.Status.ScenarioResults).To(HaveLen(1))
+			g.Expect(got.Status.ScenarioResults[0].Findings).NotTo(BeEmpty())
+			g.Expect(got.Status.ScenarioResults[0].Findings[0].Message).To(ContainSubstring("test-pdb"))
+
+			var node corev1.Node
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: blockedEvictionNode}, &node)).To(Succeed())
+			g.Expect(node.Spec.Unschedulable).To(BeFalse())
+		}, 20*time.Second, interval).Should(Succeed())
+	})
+
+	It("should resume the normal flow when blocked evictions later succeed", func() {
+		dep := createDeployment(ctx, yieldingTarget, "default", 1)
+		createRunningPods(ctx, dep)
+		trial := createNodeDrainTrial(ctx, "exp-yielding", "default", dep.Name, 5*time.Second, 30*time.Second)
+		key := client.ObjectKeyFromObject(trial)
+
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.Status.InjectionIncomplete).To(BeTrue())
+		}, timeout, interval).Should(Succeed())
+
+		// The stub yields on the third attempt: the flag drops and the trial
+		// runs to a normal end — anything but Blocked.
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseCompleted))
+			g.Expect(got.Status.Outcome).NotTo(Equal(temperv1alpha1.OutcomeBlocked))
+			g.Expect(got.Status.InjectionIncomplete).To(BeFalse())
+		}, 30*time.Second, interval).Should(Succeed())
+	})
+
 	It("should leave no cordon behind when Inject fails after mutating", func() {
 		createNode(ctx, cordonLeakNode)
 		dep := createDeployment(ctx, failAfterCordonTarget, "default", 1)

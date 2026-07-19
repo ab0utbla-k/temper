@@ -61,6 +61,7 @@ type TrialReconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;delete
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;update
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -189,29 +190,7 @@ func (r *TrialReconciler) reconcilePending(ctx context.Context, trial *temperv1a
 func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1alpha1.Trial) (ctrl.Result, error) {
 	idx := int(trial.Status.CurrentScenarioIndex)
 	if idx >= len(trial.Spec.Scenarios) {
-		// All scenarios done.
-		trial.Status.Phase = temperv1alpha1.TrialPhaseCompleted
-
-		outcome := temperv1alpha1.OutcomePassed
-		if len(trial.Status.ScenarioResults) != len(trial.Spec.Scenarios) {
-			outcome = temperv1alpha1.OutcomeFailed
-		}
-		for _, res := range trial.Status.ScenarioResults {
-			if res.RecoveredAt == nil {
-				outcome = temperv1alpha1.OutcomeFailed
-				break
-			}
-		}
-		trial.Status.Outcome = outcome
-
-		if err := r.Status().Update(ctx, trial); err != nil {
-			return ctrl.Result{}, fmt.Errorf("update status to Completed: %w", err)
-		}
-		r.Recorder.Eventf(trial, nil, "Normal", "Completed", "Completed",
-			"All scenarios completed")
-		metrics.TrialsTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), "completed").Inc()
-		metrics.TrialDurationSeconds.WithLabelValues(trial.Namespace, sourceLabel(trial)).Observe(time.Since(trial.CreationTimestamp.Time).Seconds())
-		return ctrl.Result{}, nil
+		return r.completeTrial(ctx, trial)
 	}
 
 	spec := trial.Spec.Scenarios[idx]
@@ -249,7 +228,15 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 			return r.failTrial(ctx, trial, fmt.Sprintf("Inject %s: %v", spec.Type, err))
 		}
 
+		if result.Incomplete {
+			trial.Status.InjectionIncomplete = true
+		}
+
 		return r.recordInjectResult(ctx, trial, spec, result, idx)
+	}
+
+	if trial.Status.InjectionIncomplete {
+		return r.continueInjection(ctx, trial, spec, target)
 	}
 
 	// State 2/3: Already injected — check duration.
@@ -332,6 +319,65 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 	return ctrl.Result{RequeueAfter: pause}, nil
 }
 
+func (r *TrialReconciler) continueInjection(
+	ctx context.Context,
+	trial *temperv1alpha1.Trial,
+	spec temperv1alpha1.Scenario,
+	target scenario.Target,
+) (ctrl.Result, error) {
+	timeout := 30 * time.Second
+
+	if spec.NodeDrain != nil && spec.NodeDrain.EvictionTimeout != nil {
+		timeout = spec.NodeDrain.EvictionTimeout.Duration
+	}
+	if time.Since(trial.Status.InjectedAt.Time) > timeout {
+		// The PDB never yielded — that is the verdict. Revert first: a
+		// terminal Trial is never reconciled again, so going terminal with
+		// the cordon still on would leak it.
+		if err := r.revertIfActive(ctx, trial); err != nil {
+			return ctrl.Result{}, fmt.Errorf("revert before blocked: %w", err)
+		}
+
+		trial.Status.InjectionIncomplete = false
+		trial.Status.Phase = temperv1alpha1.TrialPhaseCompleted
+		trial.Status.Outcome = temperv1alpha1.OutcomeBlocked
+
+		if err := r.Status().Update(ctx, trial); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update status to Blocked: %w", err)
+		}
+		r.Recorder.Eventf(trial, nil, "Warning", "Blocked", "Blocked",
+			"Evictions stayed blocked past the eviction timeout; see scenarioResults findings")
+		metrics.TrialsTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), "blocked").Inc()
+		metrics.TrialDurationSeconds.WithLabelValues(trial.Namespace, sourceLabel(trial)).Observe(time.Since(trial.CreationTimestamp.Time).Seconds())
+		return ctrl.Result{}, nil
+	}
+
+	s, err := r.scenarioFor(trial, spec)
+	if err != nil {
+		return r.failTrial(ctx, trial, fmt.Sprintf("Build scenario: %v", err))
+	}
+
+	result, err := s.Inject(ctx, target)
+	if err != nil {
+		return r.failTrial(ctx, trial, fmt.Sprintf("Inject %s: %v", spec.Type, err))
+	}
+
+	// The latest attempt is the truth: replace the row's findings, don't append.
+	if n := len(trial.Status.ScenarioResults); n > 0 {
+		trial.Status.ScenarioResults[n-1].Findings = apiFindings(result.Findings)
+	}
+
+	if !result.Incomplete {
+		trial.Status.InjectionIncomplete = false
+	}
+
+	if err := r.Status().Update(ctx, trial); err != nil {
+		return ctrl.Result{}, fmt.Errorf("update status after injection retry: %w", err)
+	}
+
+	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+}
+
 // recordInjectResult persists the post-inject status and emits the scenario's
 // events and metrics.
 func (r *TrialReconciler) recordInjectResult(
@@ -351,18 +397,10 @@ func (r *TrialReconciler) recordInjectResult(
 		trial.Status.Metrics.TotalPodsKilled += podsKilled
 	}
 
-	findings := make([]temperv1alpha1.Finding, 0, len(result.Findings))
-	for _, f := range result.Findings {
-		findings = append(findings, temperv1alpha1.Finding{
-			Reason:  "EvictionBlocked",
-			Message: fmt.Sprintf("Pod %s eviction blocked: %s", f.Pod, f.Reason),
-		})
-	}
-
 	trial.Status.ScenarioResults = append(trial.Status.ScenarioResults, temperv1alpha1.ScenarioResult{
 		Type:       spec.Type,
 		InjectedAt: *trial.Status.InjectedAt,
-		Findings:   findings,
+		Findings:   apiFindings(result.Findings),
 	})
 
 	if err := r.Status().Update(ctx, trial); err != nil {
@@ -389,6 +427,33 @@ func (r *TrialReconciler) recordInjectResult(
 	}
 
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+}
+
+// completeTrial concludes a Trial whose scenarios all ran: the outcome is
+// Passed only with recovery proof for every scenario, otherwise Failed.
+func (r *TrialReconciler) completeTrial(ctx context.Context, trial *temperv1alpha1.Trial) (ctrl.Result, error) {
+	trial.Status.Phase = temperv1alpha1.TrialPhaseCompleted
+
+	outcome := temperv1alpha1.OutcomePassed
+	if len(trial.Status.ScenarioResults) != len(trial.Spec.Scenarios) {
+		outcome = temperv1alpha1.OutcomeFailed
+	}
+	for _, res := range trial.Status.ScenarioResults {
+		if res.RecoveredAt == nil {
+			outcome = temperv1alpha1.OutcomeFailed
+			break
+		}
+	}
+	trial.Status.Outcome = outcome
+
+	if err := r.Status().Update(ctx, trial); err != nil {
+		return ctrl.Result{}, fmt.Errorf("update status to Completed: %w", err)
+	}
+	r.Recorder.Eventf(trial, nil, "Normal", "Completed", "Completed",
+		"All scenarios completed")
+	metrics.TrialsTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), "completed").Inc()
+	metrics.TrialDurationSeconds.WithLabelValues(trial.Namespace, sourceLabel(trial)).Observe(time.Since(trial.CreationTimestamp.Time).Seconds())
+	return ctrl.Result{}, nil
 }
 
 func (r *TrialReconciler) failTrial(ctx context.Context, trial *temperv1alpha1.Trial, reason string) (ctrl.Result, error) {
@@ -455,6 +520,18 @@ func (r *TrialReconciler) checkRecovery(
 	default:
 		return false, fmt.Errorf("recovery probe has no kind set")
 	}
+}
+
+// apiFindings converts scenario findings into their API status form.
+func apiFindings(findings []scenario.Finding) []temperv1alpha1.Finding {
+	out := make([]temperv1alpha1.Finding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, temperv1alpha1.Finding{
+			Reason:  "EvictionBlocked",
+			Message: fmt.Sprintf("Pod %s eviction blocked: %s", f.Pod, f.Reason),
+		})
+	}
+	return out
 }
 
 func buildScenario(c client.Client, spec temperv1alpha1.Scenario, owner string) (scenario.Scenario, error) {

@@ -8,6 +8,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -73,6 +74,7 @@ func (n *NodeDrain) Inject(ctx context.Context, target Target) (Result, error) {
 	}
 
 	evicted := 0
+	blocked := 0
 	var findings []Finding
 
 	for _, pod := range running {
@@ -93,7 +95,15 @@ func (n *NodeDrain) Inject(ctx context.Context, target Target) (Result, error) {
 		case err == nil:
 			evicted++
 		case apierrors.IsTooManyRequests(err):
-			findings = append(findings, Finding{Pod: pod.Name, Reason: "blocked by PodDisruptionBudget"})
+			blocked++
+			// The diagnosis is best-effort: if the PDB lookup fails, the
+			// finding still records the fact with the plain reason.
+			reason := "blocked by PodDisruptionBudget"
+			if pdb, lookupErr := n.blockingPDB(ctx, &pod); lookupErr == nil && pdb != nil {
+				reason = fmt.Sprintf("PodDisruptionBudget %s allows %d disruptions",
+					pdb.Name, pdb.Status.DisruptionsAllowed)
+			}
+			findings = append(findings, Finding{Pod: pod.Name, Reason: reason})
 		case apierrors.IsNotFound(err):
 			// already gone — nothing to do
 		default:
@@ -101,7 +111,7 @@ func (n *NodeDrain) Inject(ctx context.Context, target Target) (Result, error) {
 		}
 	}
 
-	return Result{PodsAffected: evicted, Findings: findings}, nil
+	return Result{PodsAffected: evicted, Findings: findings, Incomplete: blocked > 0}, nil
 }
 
 func (n *NodeDrain) Revert(ctx context.Context, _ Target) error {
@@ -129,4 +139,26 @@ func (n *NodeDrain) RecoveryProbe() RecoveryProbe {
 	return RecoveryProbe{
 		WorkloadReady: &WorkloadReadyProbe{},
 	}
+}
+
+// blockingPDB finds the first PDB whose selector matches the pod.
+// A nil result with a nil error means no PDB matches.
+func (n *NodeDrain) blockingPDB(ctx context.Context, pod *corev1.Pod) (*policyv1.PodDisruptionBudget, error) {
+	var pdbList policyv1.PodDisruptionBudgetList
+	if err := n.Client.List(ctx, &pdbList, client.InNamespace(pod.Namespace)); err != nil {
+		return nil, fmt.Errorf("list pdbs in %s: %w", pod.Namespace, err)
+	}
+
+	for _, pdb := range pdbList.Items {
+		selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+		if err != nil {
+			return nil, fmt.Errorf("pdb %s: parse selector: %w", pdb.Name, err)
+		}
+
+		if selector.Matches(labels.Set(pod.Labels)) {
+			return &pdb, nil
+		}
+	}
+
+	return nil, nil
 }
