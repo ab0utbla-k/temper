@@ -31,9 +31,22 @@ const (
 	// failTrial must clean up (the item-1 cordon-leak regression).
 	failAfterCordonTarget = "dep-fail-after-cordon"
 	cordonLeakNode        = "node-cordon-leak"
+
+	// blockedEvictionTarget marks a deployment whose scenario Inject cordons
+	// blockedEvictionNode and reports Incomplete forever — a PDB that never
+	// yields. The controller must end it in Outcome=Blocked and uncordon.
+	blockedEvictionTarget = "dep-blocked-eviction"
+	blockedEvictionNode   = "node-blocked-eviction"
+
+	// yieldingTarget marks a deployment whose scenario Inject reports
+	// Incomplete twice and then succeeds — a PDB that yields mid-trial.
+	yieldingTarget = "dep-yielding-eviction"
 )
 
-var failInjectCalls atomic.Int32
+var (
+	failInjectCalls     atomic.Int32
+	yieldingInjectCalls atomic.Int32
+)
 
 // newTestScenario builds the real scenario, wrapped so Inject fails (and is
 // counted) for failInjectTarget. All other targets behave normally.
@@ -57,32 +70,58 @@ func (f *failInjectScenario) Inject(ctx context.Context, target scenario.Target)
 		return scenario.Result{}, errors.New("inject failed by test")
 	case failAfterCordonTarget:
 		// Mutate first, then fail — models an eviction error after the cordon.
-		var node corev1.Node
-		if err := f.c.Get(ctx, client.ObjectKey{Name: cordonLeakNode}, &node); err != nil {
-			return scenario.Result{}, err
-		}
-		node.Spec.Unschedulable = true
-		if err := f.c.Update(ctx, &node); err != nil {
+		if err := f.cordonNode(ctx, cordonLeakNode); err != nil {
 			return scenario.Result{}, err
 		}
 		return scenario.Result{}, errors.New("inject failed after cordon by test")
+	case blockedEvictionTarget:
+		if err := f.cordonNode(ctx, blockedEvictionNode); err != nil {
+			return scenario.Result{}, err
+		}
+		return scenario.Result{
+			Incomplete: true,
+			Findings: []scenario.Finding{
+				{Pod: "pod-blocked", Reason: "PodDisruptionBudget test-pdb allows 0 disruptions"},
+			},
+		}, nil
+	case yieldingTarget:
+		if yieldingInjectCalls.Add(1) <= 2 {
+			return scenario.Result{Incomplete: true}, nil
+		}
+		return scenario.Result{PodsAffected: 1}, nil
 	}
 	return f.inner.Inject(ctx, target)
 }
 
 func (f *failInjectScenario) Revert(ctx context.Context, target scenario.Target) error {
-	if target.Name == failAfterCordonTarget {
-		var node corev1.Node
-		if err := f.c.Get(ctx, client.ObjectKey{Name: cordonLeakNode}, &node); err != nil {
-			return client.IgnoreNotFound(err)
-		}
-		if !node.Spec.Unschedulable {
-			return nil
-		}
-		node.Spec.Unschedulable = false
-		return f.c.Update(ctx, &node)
+	switch target.Name {
+	case failAfterCordonTarget:
+		return f.uncordonNode(ctx, cordonLeakNode)
+	case blockedEvictionTarget:
+		return f.uncordonNode(ctx, blockedEvictionNode)
 	}
 	return f.inner.Revert(ctx, target)
+}
+
+func (f *failInjectScenario) cordonNode(ctx context.Context, name string) error {
+	var node corev1.Node
+	if err := f.c.Get(ctx, client.ObjectKey{Name: name}, &node); err != nil {
+		return err
+	}
+	node.Spec.Unschedulable = true
+	return f.c.Update(ctx, &node)
+}
+
+func (f *failInjectScenario) uncordonNode(ctx context.Context, name string) error {
+	var node corev1.Node
+	if err := f.c.Get(ctx, client.ObjectKey{Name: name}, &node); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !node.Spec.Unschedulable {
+		return nil
+	}
+	node.Spec.Unschedulable = false
+	return f.c.Update(ctx, &node)
 }
 
 func (f *failInjectScenario) RecoveryProbe() scenario.RecoveryProbe {
@@ -223,6 +262,38 @@ func createTrial(
 				{
 					Type:     temperv1alpha1.ScenarioTypePodKill,
 					Duration: metav1.Duration{Duration: duration},
+				},
+			},
+		},
+	}
+
+	Expect(k8sClient.Create(ctx, trial)).To(Succeed())
+
+	return trial
+}
+
+func createNodeDrainTrial(
+	ctx context.Context,
+	name, namespace, targetDeployment string,
+	duration, evictionTimeout time.Duration,
+) *temperv1alpha1.Trial {
+	trial := &temperv1alpha1.Trial{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: temperv1alpha1.TrialSpec{
+			Target: temperv1alpha1.Target{
+				Kind: "Deployment",
+				Name: new(targetDeployment),
+			},
+			Scenarios: []temperv1alpha1.Scenario{
+				{
+					Type:     temperv1alpha1.ScenarioTypeNodeDrain,
+					Duration: metav1.Duration{Duration: duration},
+					NodeDrain: &temperv1alpha1.NodeDrainConfig{
+						EvictionTimeout: &metav1.Duration{Duration: evictionTimeout},
+					},
 				},
 			},
 		},
