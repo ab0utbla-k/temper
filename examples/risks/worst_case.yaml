@@ -1,0 +1,49 @@
+# Demonstrates: SingleReplica + NoPodAntiAffinity + MissingHealthProbes +
+#                NoPodDisruptionBudget (four risks at once)
+#
+# A completely bare single-replica deployment: no probes, no anti-affinity,
+# no PDB. ConcentratedPlacement cannot fire alongside SingleReplica in a real
+# cluster because it needs two or more running pods.
+#
+# Mitigate risks one by one while the Trial runs and watch each entry
+# disappear from status.risks:
+#   kubectl scale deployment risk-worst-case --replicas=3   # clears SingleReplica
+#   kubectl apply -f <pdb>                                  # clears NoPodDisruptionBudget
+#   add probes / anti-affinity via kubectl edit             # clears the rest
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-worst-case
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: risk-worst-case
+  template:
+    metadata:
+      labels:
+        app: risk-worst-case
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+---
+apiVersion: temper.io/v1alpha1
+kind: Trial
+metadata:
+  name: risk-worst-case
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  target:
+    kind: Deployment
+    name: risk-worst-case
+  scenarios:
+    - type: pod-kill
+      duration: 120s
+      podKill:
+        count: 1

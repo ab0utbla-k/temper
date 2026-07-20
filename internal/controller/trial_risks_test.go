@@ -27,7 +27,7 @@ func hasRiskRule(risks []temperv1alpha1.Risk, rule temperv1alpha1.RiskRule) bool
 }
 
 // createPDB creates a PodDisruptionBudget selecting the given app label.
-func createPDB(ctx context.Context, name, namespace, app string) {
+func createPDB(ctx context.Context, name, namespace, app string) { //nolint:unparam // may vary
 	minAvail := intstr.FromInt32(1)
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
@@ -128,6 +128,62 @@ var _ = Describe("Trial risk detection", func() {
 		var got temperv1alpha1.Trial
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trial), &got)).To(Succeed())
 		Expect(got.Status.Risks).To(BeEmpty())
+	})
+})
+
+var _ = Describe("Trial risk reconciliation", func() {
+	It("removes a risk once its condition is mitigated mid-run", func() {
+		dep := createDeployment(ctx, "dep-mitigate", "default", 1)
+		createRunningPods(ctx, dep)
+		trial := createTrial(ctx, "exp-mitigate", "default", dep.Name, 30*time.Second)
+		key := client.ObjectKeyFromObject(trial)
+
+		// First pass: NoPodDisruptionBudget among the detected risks.
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(hasRiskRule(got.Status.Risks, temperv1alpha1.RiskNoPodDisruptionBudget)).To(BeTrue())
+		}, timeout, interval).Should(Succeed())
+
+		// Mitigate: create a PDB matching the target's pods mid-run.
+		createPDB(ctx, "pdb-mitigate", "default", dep.Name)
+
+		// A later reconcile drops the mitigated risk; the others remain.
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(hasRiskRule(got.Status.Risks, temperv1alpha1.RiskNoPodDisruptionBudget)).To(BeFalse())
+			g.Expect(hasRiskRule(got.Status.Risks, temperv1alpha1.RiskSingleReplica)).To(BeTrue())
+			g.Expect(hasRiskRule(got.Status.Risks, temperv1alpha1.RiskMissingHealthProbes)).To(BeTrue())
+			g.Expect(hasRiskRule(got.Status.Risks, temperv1alpha1.RiskNoPodAntiAffinity)).To(BeTrue())
+		}, timeout, interval).Should(Succeed())
+	})
+
+	It("adds a risk whose condition appears after the first pass", func() {
+		dep := createDeployment(ctx, "dep-late", "default", 1)
+		createRunningPods(ctx, dep)
+		// PDB exists from the start, so NoPodDisruptionBudget is absent.
+		createPDB(ctx, "pdb-late", "default", dep.Name)
+		trial := createTrial(ctx, "exp-late", "default", dep.Name, 30*time.Second)
+		key := client.ObjectKeyFromObject(trial)
+
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(hasRiskRule(got.Status.Risks, temperv1alpha1.RiskSingleReplica)).To(BeTrue())
+			g.Expect(hasRiskRule(got.Status.Risks, temperv1alpha1.RiskNoPodDisruptionBudget)).To(BeFalse())
+		}, timeout, interval).Should(Succeed())
+
+		// Introduce the condition mid-run: delete the PDB.
+		var pdb policyv1.PodDisruptionBudget
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pdb-late"}, &pdb)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, &pdb)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(hasRiskRule(got.Status.Risks, temperv1alpha1.RiskNoPodDisruptionBudget)).To(BeTrue())
+		}, timeout, interval).Should(Succeed())
 	})
 })
 

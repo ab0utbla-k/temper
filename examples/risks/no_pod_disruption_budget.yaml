@@ -1,0 +1,62 @@
+# Demonstrates: NoPodDisruptionBudget
+#
+# Two probed, anti-affine replicas — but no PodDisruptionBudget selects them,
+# so voluntary disruptions (node drains) are unbounded and the Trial reports
+# NoPodDisruptionBudget.
+#
+# Mitigate live: create a PDB matching app=risk-no-pdb while the Trial runs
+# and watch the risk disappear from status.risks on the next reconcile.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-no-pdb
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: risk-no-pdb
+  template:
+    metadata:
+      labels:
+        app: risk-no-pdb
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: risk-no-pdb
+      containers:
+        - name: app
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+---
+apiVersion: temper.io/v1alpha1
+kind: Trial
+metadata:
+  name: risk-no-pdb
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  target:
+    kind: Deployment
+    name: risk-no-pdb
+  scenarios:
+    - type: pod-kill
+      duration: 60s
+      podKill:
+        count: 1

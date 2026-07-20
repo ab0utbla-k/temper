@@ -55,7 +55,12 @@ func Detect(ctx context.Context, c client.Client, kind, namespace, name string) 
 		return nil, fmt.Errorf("list poddisruptionbudgets: %w", err)
 	}
 
-	return evaluate(wl, podList.Items, pdbList.Items), nil
+	snapshot := Snapshot{
+		Workload: wl,
+		Pods:     podList.Items,
+		PDBs:     pdbList.Items,
+	}
+	return evaluate(snapshot), nil
 }
 
 // loadWorkload reads the target and normalizes it into a workload view.
@@ -97,26 +102,16 @@ func replicasOrDefault(r *int32) int32 {
 	return *r
 }
 
-// evaluate runs every per-case check and collects the risks. Pure: it takes
-// plain inputs and returns risks, with no cluster access, so each check is
-// unit-testable in isolation.
-func evaluate(wl workload, pods []corev1.Pod, pdbs []policyv1.PodDisruptionBudget) []temperv1alpha1.Risk {
+// evaluate iterates the ordered rule registry over the snapshot and collects
+// the risks whose conditions hold. Pure: no cluster access, so every rule is
+// unit-testable in isolation. Registry order keeps output deterministic.
+func evaluate(s Snapshot) []temperv1alpha1.Risk {
 	var risks []temperv1alpha1.Risk
 
-	if r := checkSingleReplica(wl); r != nil {
-		risks = append(risks, *r)
-	}
-	if r := checkNoPodAntiAffinity(wl); r != nil {
-		risks = append(risks, *r)
-	}
-	if r := checkMissingHealthProbes(wl); r != nil {
-		risks = append(risks, *r)
-	}
-	if r := checkNoPodDisruptionBudget(wl, pdbs); r != nil {
-		risks = append(risks, *r)
-	}
-	if r := checkConcentratedPlacement(pods); r != nil {
-		risks = append(risks, *r)
+	for _, rule := range rules {
+		if r := rule.Detect(s); r != nil {
+			risks = append(risks, *r)
+		}
 	}
 
 	return risks

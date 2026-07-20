@@ -63,7 +63,7 @@ type TrialReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
-// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;update
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
@@ -195,16 +195,19 @@ func (r *TrialReconciler) reconcilePending(ctx context.Context, trial *temperv1a
 	return ctrl.Result{RequeueAfter: time.Second}, nil
 }
 
-// detectRisks populates trial.Status.Risks with resilience weaknesses found on
-// the target workload. It is advisory and never returns an error: detection
-// problems are logged and leave Risks untouched so the Trial still runs.
-func (r *TrialReconciler) detectRisks(ctx context.Context, trial *temperv1alpha1.Trial) {
+// detectRisks refreshes trial.Status.Risks against the target workload's
+// current state: newly detected risks are added and mitigated risks are
+// removed. It reports whether the recorded set changed so callers know a
+// status write is needed. It is advisory and never returns an error:
+// detection problems are logged and leave Risks untouched (never wiped) so
+// the Trial still runs.
+func (r *TrialReconciler) detectRisks(ctx context.Context, trial *temperv1alpha1.Trial) bool {
 	log := logf.FromContext(ctx)
 
 	if trial.Spec.Target.Name == nil {
 		log.Info("Skipping risk detection: target has no name",
 			"targetKind", trial.Spec.Target.Kind)
-		return
+		return false
 	}
 
 	// Carry the full target reference on every line so risk detection is easy
@@ -221,25 +224,77 @@ func (r *TrialReconciler) detectRisks(ctx context.Context, trial *temperv1alpha1
 		trial.Spec.Target.Kind, trial.Namespace, *trial.Spec.Target.Name)
 	if err != nil {
 		log.Error(err, "Failed to detect target risks")
-		return
+		return false
+	}
+
+	if risksEqual(trial.Status.Risks, risks) {
+		log.Info("Target risks unchanged", "count", len(risks))
+		return false
+	}
+
+	if added := diffRules(risks, trial.Status.Risks); len(added) > 0 {
+		log.Info("Detected new target risks", "rules", added)
+	}
+	if removed := diffRules(trial.Status.Risks, risks); len(removed) > 0 {
+		log.Info("Removed mitigated target risks", "rules", removed)
 	}
 
 	if len(risks) == 0 {
 		log.Info("Detected no target risks")
-		trial.Status.Risks = risks
-		return
+	} else {
+		rules := make([]string, len(risks))
+		for i, rk := range risks {
+			rules[i] = string(rk.Rule)
+		}
+		log.Info("Updated target risks", "count", len(risks), "rules", rules)
 	}
-
-	rules := make([]string, len(risks))
-	for i, rk := range risks {
-		rules[i] = string(rk.Rule)
-	}
-	log.Info("Detected target risks", "count", len(risks), "rules", rules)
 
 	trial.Status.Risks = risks
+	return true
+}
+
+// risksEqual reports whether two risk sets carry the same rules and messages
+// in the same order (detection output is deterministic).
+func risksEqual(a, b []temperv1alpha1.Risk) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Rule != b[i].Rule || a[i].Message != b[i].Message {
+			return false
+		}
+	}
+	return true
+}
+
+// diffRules returns the rule tokens present in a but absent from b.
+func diffRules(a, b []temperv1alpha1.Risk) []string {
+	in := make(map[temperv1alpha1.RiskRule]bool, len(b))
+	for _, rk := range b {
+		in[rk.Rule] = true
+	}
+	var out []string
+	for _, rk := range a {
+		if !in[rk.Rule] {
+			out = append(out, string(rk.Rule))
+		}
+	}
+	return out
 }
 
 func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1alpha1.Trial) (ctrl.Result, error) {
+	// Keep status.risks current on every pass, independent of scenario
+	// execution: risks whose condition was mitigated since the last pass
+	// disappear, newly introduced ones appear. Persist immediately because
+	// several paths below return without another status write. Best-effort:
+	// a failed write is retried naturally on the next pass.
+	if r.detectRisks(ctx, trial) {
+		if err := r.Status().Update(ctx, trial); err != nil {
+			logf.FromContext(ctx).Error(err, "Failed to persist updated risks")
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+	}
+
 	idx := int(trial.Status.CurrentScenarioIndex)
 	if idx >= len(trial.Spec.Scenarios) {
 		return r.completeTrial(ctx, trial)

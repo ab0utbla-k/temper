@@ -340,3 +340,243 @@ func TestDetectUnsupportedKind(t *testing.T) {
 
 // toObj is a helper to pass a value pod as a client.Object.
 func toObj(p corev1.Pod) client.Object { return &p }
+
+// --- Mitigation: detect, fix, re-detect ----------------------------------
+
+// TestDetectMitigationPerRule proves removal symmetry for every rule: the
+// fully risky deployment carries the rule, applying that rule's fix makes a
+// subsequent Detect pass drop it while unrelated risks remain.
+func TestDetectMitigationPerRule(t *testing.T) {
+	probe := &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz"}}}
+
+	tests := []struct {
+		name     string
+		rule     temperv1alpha1.RiskRule
+		mitigate func(t *testing.T, c client.Client)
+	}{
+		{
+			name: "scaling up clears SingleReplica",
+			rule: temperv1alpha1.RiskSingleReplica,
+			mitigate: func(t *testing.T, c client.Client) {
+				t.Helper()
+				var dep appsv1.Deployment
+				mustGet(t, c, &dep)
+				dep.Spec.Replicas = new(int32(3))
+				mustUpdate(t, c, &dep)
+			},
+		},
+		{
+			name: "adding anti-affinity clears NoPodAntiAffinity",
+			rule: temperv1alpha1.RiskNoPodAntiAffinity,
+			mitigate: func(t *testing.T, c client.Client) {
+				t.Helper()
+				var dep appsv1.Deployment
+				mustGet(t, c, &dep)
+				dep.Spec.Template.Spec.Affinity = &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{}}
+				mustUpdate(t, c, &dep)
+			},
+		},
+		{
+			name: "adding probes clears MissingHealthProbes",
+			rule: temperv1alpha1.RiskMissingHealthProbes,
+			mitigate: func(t *testing.T, c client.Client) {
+				t.Helper()
+				var dep appsv1.Deployment
+				mustGet(t, c, &dep)
+				for i := range dep.Spec.Template.Spec.Containers {
+					dep.Spec.Template.Spec.Containers[i].ReadinessProbe = probe
+					dep.Spec.Template.Spec.Containers[i].LivenessProbe = probe
+				}
+				mustUpdate(t, c, &dep)
+			},
+		},
+		{
+			name: "creating a PDB clears NoPodDisruptionBudget",
+			rule: temperv1alpha1.RiskNoPodDisruptionBudget,
+			mitigate: func(t *testing.T, c client.Client) {
+				t.Helper()
+				pdb := &policyv1.PodDisruptionBudget{
+					ObjectMeta: metav1.ObjectMeta{Name: "pdb", Namespace: ns},
+					Spec:       policyv1.PodDisruptionBudgetSpec{Selector: &metav1.LabelSelector{MatchLabels: appLabels}},
+				}
+				if err := c.Create(context.Background(), pdb); err != nil {
+					t.Fatalf("create pdb: %v", err)
+				}
+			},
+		},
+		{
+			name: "spreading pods clears ConcentratedPlacement",
+			rule: temperv1alpha1.RiskConcentratedPlacement,
+			mitigate: func(t *testing.T, c client.Client) {
+				t.Helper()
+				var pod corev1.Pod
+				if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "payment-2"}, &pod); err != nil {
+					t.Fatalf("get pod: %v", err)
+				}
+				pod.Spec.NodeName = "node-b"
+				mustUpdate(t, c, &pod)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newClient(riskyDeployment(),
+				toObj(runningPod("payment-1", "node-a")),
+				toObj(runningPod("payment-2", "node-a")),
+			)
+
+			before, err := Detect(context.Background(), c, "Deployment", ns, target)
+			if err != nil {
+				t.Fatalf("Detect (before): %v", err)
+			}
+			if !hasRule(before, tc.rule) {
+				t.Fatalf("precondition failed: rule %q not detected before mitigation in %+v", tc.rule, before)
+			}
+
+			tc.mitigate(t, c)
+
+			after, err := Detect(context.Background(), c, "Deployment", ns, target)
+			if err != nil {
+				t.Fatalf("Detect (after): %v", err)
+			}
+			if hasRule(after, tc.rule) {
+				t.Fatalf("rule %q still present after mitigation: %+v", tc.rule, after)
+			}
+			// Exactly one condition was fixed: the other risks must remain.
+			if len(after) != len(before)-1 {
+				t.Fatalf("expected %d risks after mitigating %q, got %d: %+v",
+					len(before)-1, tc.rule, len(after), after)
+			}
+		})
+	}
+}
+
+// TestDetectLateAppearingRisk proves a condition introduced after a clean pass
+// is reported by a later pass (PDB deleted -> NoPodDisruptionBudget appears).
+func TestDetectLateAppearingRisk(t *testing.T) {
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{Name: "pdb", Namespace: ns},
+		Spec:       policyv1.PodDisruptionBudgetSpec{Selector: &metav1.LabelSelector{MatchLabels: appLabels}},
+	}
+	c := newClient(riskyDeployment(), pdb)
+
+	before, err := Detect(context.Background(), c, "Deployment", ns, target)
+	if err != nil {
+		t.Fatalf("Detect (before): %v", err)
+	}
+	if hasRule(before, temperv1alpha1.RiskNoPodDisruptionBudget) {
+		t.Fatalf("precondition failed: NoPodDisruptionBudget present with PDB in place")
+	}
+
+	if err := c.Delete(context.Background(), pdb); err != nil {
+		t.Fatalf("delete pdb: %v", err)
+	}
+
+	after, err := Detect(context.Background(), c, "Deployment", ns, target)
+	if err != nil {
+		t.Fatalf("Detect (after): %v", err)
+	}
+	if !hasRule(after, temperv1alpha1.RiskNoPodDisruptionBudget) {
+		t.Fatalf("NoPodDisruptionBudget not detected after PDB deletion: %+v", after)
+	}
+}
+
+func mustGet(t *testing.T, c client.Client, dep *appsv1.Deployment) {
+	t.Helper()
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: target}, dep); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+}
+
+func mustUpdate(t *testing.T, c client.Client, obj client.Object) {
+	t.Helper()
+	if err := c.Update(context.Background(), obj); err != nil {
+		t.Fatalf("update %T: %v", obj, err)
+	}
+}
+
+// --- Rule interface and registry ------------------------------------------
+
+// TestRuleRegistryCompleteAndUnique proves the registry covers every supported
+// RiskRule token exactly once, in deterministic order.
+func TestRuleRegistryCompleteAndUnique(t *testing.T) {
+	want := []temperv1alpha1.RiskRule{
+		temperv1alpha1.RiskSingleReplica,
+		temperv1alpha1.RiskNoPodAntiAffinity,
+		temperv1alpha1.RiskMissingHealthProbes,
+		temperv1alpha1.RiskNoPodDisruptionBudget,
+		temperv1alpha1.RiskConcentratedPlacement,
+	}
+	if len(rules) != len(want) {
+		t.Fatalf("registry has %d rules, want %d", len(rules), len(want))
+	}
+	seen := make(map[temperv1alpha1.RiskRule]bool, len(rules))
+	for i, rule := range rules {
+		id := rule.ID()
+		if seen[id] {
+			t.Errorf("rule %q registered more than once", id)
+		}
+		seen[id] = true
+		if id != want[i] {
+			t.Errorf("registry[%d] = %q, want %q (order must be deterministic)", i, id, want[i])
+		}
+	}
+}
+
+// TestRuleDetectMitigatedAgreement proves the interface invariant for every
+// rule on both a risky and a clean snapshot: Mitigated(s) == (Detect(s) == nil),
+// and a detected risk carries the rule's own ID with a message.
+func TestRuleDetectMitigatedAgreement(t *testing.T) {
+	risky := Snapshot{
+		Workload: workload{
+			replicas: 1,
+			selector: &metav1.LabelSelector{MatchLabels: appLabels},
+			template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: appLabels},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
+			},
+		},
+		Pods: []corev1.Pod{runningPod("p1", "node-a"), runningPod("p2", "node-a")},
+	}
+	clean := Snapshot{
+		Workload: resilientWorkload(),
+		Pods:     []corev1.Pod{runningPod("p1", "node-a"), runningPod("p2", "node-b")},
+		PDBs: []policyv1.PodDisruptionBudget{{
+			ObjectMeta: metav1.ObjectMeta{Name: "pdb", Namespace: ns},
+			Spec:       policyv1.PodDisruptionBudgetSpec{Selector: &metav1.LabelSelector{MatchLabels: appLabels}},
+		}},
+	}
+
+	for _, rule := range rules {
+		for _, tc := range []struct {
+			name string
+			snap Snapshot
+		}{{"risky", risky}, {"clean", clean}} {
+			t.Run(string(rule.ID())+"/"+tc.name, func(t *testing.T) {
+				detected := rule.Detect(tc.snap)
+				if got, want := rule.Mitigated(tc.snap), detected == nil; got != want {
+					t.Fatalf("Mitigated=%v disagrees with Detect==nil (%v)", got, want)
+				}
+				if detected != nil {
+					if detected.Rule != rule.ID() {
+						t.Errorf("Detect returned rule %q, want %q", detected.Rule, rule.ID())
+					}
+					if detected.Message == "" {
+						t.Errorf("rule %q returned an empty message", rule.ID())
+					}
+				}
+			})
+		}
+	}
+
+	// Every rule must flag the fully risky snapshot and clear the clean one.
+	for _, rule := range rules {
+		if rule.Detect(risky) == nil {
+			t.Errorf("rule %q did not fire on the fully risky snapshot", rule.ID())
+		}
+		if rule.Detect(clean) != nil {
+			t.Errorf("rule %q fired on the clean snapshot", rule.ID())
+		}
+	}
+}

@@ -173,7 +173,10 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 
 # Local Kind cluster (kept separate from the e2e cluster KIND_CLUSTER).
 KIND_DEV_CLUSTER ?= temper-dev
-KIND_IMG ?= temper:demo
+KIND_TAG ?= dev-$(shell git rev-parse --short HEAD 2>/dev/null || echo nogit)-$(shell date +%Y%m%d-%H%M%S)
+KIND_TAG := $(KIND_TAG)
+KIND_IMG ?= temper:$(KIND_TAG)
+KIND_IMG := $(KIND_IMG)
 KIND_CONFIG ?= kind-config.yaml
 
 .PHONY: kind-cluster

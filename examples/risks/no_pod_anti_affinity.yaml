@@ -1,0 +1,64 @@
+# Demonstrates: NoPodAntiAffinity
+#
+# Two probed replicas with a PDB, but the pod template defines neither
+# podAntiAffinity nor topologySpreadConstraints — the scheduler is free to
+# pack all replicas onto one node, so the Trial reports NoPodAntiAffinity.
+#
+# Note: on a single-node cluster both pods land on the same node anyway, so
+# ConcentratedPlacement may fire too. Mitigate this risk live by adding the
+# anti-affinity block and watching the risk disappear from status.risks.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-no-anti-affinity
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: risk-no-anti-affinity
+  template:
+    metadata:
+      labels:
+        app: risk-no-anti-affinity
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: risk-no-anti-affinity
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: risk-no-anti-affinity
+---
+apiVersion: temper.io/v1alpha1
+kind: Trial
+metadata:
+  name: risk-no-anti-affinity
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  target:
+    kind: Deployment
+    name: risk-no-anti-affinity
+  scenarios:
+    - type: pod-kill
+      duration: 60s
+      podKill:
+        count: 1

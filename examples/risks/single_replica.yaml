@@ -1,0 +1,68 @@
+# Demonstrates: SingleReplica
+#
+# The deployment is otherwise hardened (probes, anti-affinity, PDB) so the
+# Trial reports exactly one risk: it runs a single replica.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-single-replica
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: risk-single-replica
+  template:
+    metadata:
+      labels:
+        app: risk-single-replica
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: risk-single-replica
+      containers:
+        - name: app
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: risk-single-replica
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: risk-single-replica
+---
+apiVersion: temper.io/v1alpha1
+kind: Trial
+metadata:
+  name: risk-single-replica
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  target:
+    kind: Deployment
+    name: risk-single-replica
+  scenarios:
+    - type: pod-kill
+      duration: 60s
+      podKill:
+        count: 1
