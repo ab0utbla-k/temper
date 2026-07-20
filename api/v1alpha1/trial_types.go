@@ -273,6 +273,48 @@ type Finding struct {
 	Message string `json:"message,omitempty"`
 }
 
+// RiskRule identifies a resilience risk detected on the target workload. The
+// constants below are the values temper emits today and are what metric labels
+// are built from, so that label stays bounded. The field itself is deliberately
+// not a CRD enum: the rule set is a lint catalogue that grows, and freezing it
+// into the API would make every new rule a CRD change.
+type RiskRule string
+
+const (
+	// RiskSingleReplica means the target runs a single replica, so any
+	// disruption takes the whole workload down.
+	RiskSingleReplica RiskRule = "SingleReplica"
+	// RiskNoPodDisruptionBudget means no PodDisruptionBudget protects the
+	// target, so voluntary disruptions are unbounded.
+	RiskNoPodDisruptionBudget RiskRule = "NoPodDisruptionBudget"
+	// RiskConcentratedPlacement means the target's pods are packed onto too few
+	// nodes, so a single node loss disrupts a large fraction of them.
+	RiskConcentratedPlacement RiskRule = "ConcentratedPlacement"
+	// RiskNoPodAntiAffinity means the target's pod template defines neither pod
+	// anti-affinity nor topology spread constraints, so nothing stops the
+	// scheduler from packing all replicas onto one node.
+	RiskNoPodAntiAffinity RiskRule = "NoPodAntiAffinity"
+	// RiskMissingReadinessProbe means at least one container in the target lacks
+	// a readiness probe, so Kubernetes cannot tell when it can serve traffic and
+	// routes to it as soon as it starts.
+	RiskMissingReadinessProbe RiskRule = "MissingReadinessProbe"
+)
+
+// Risk is one resilience weakness the controller detected on the target
+// workload. It pairs a machine-readable rule token with a human sentence,
+// the same shape as Finding (reason + message) and HaltCode. The workload it
+// applies to is the Trial's target (spec.target).
+type Risk struct {
+	// rule is a machine-readable token identifying the risk kind, so risks can
+	// be grouped and counted. See RiskRule for the values temper emits today;
+	// the set grows as rules are added, so treat unknown values as opaque.
+	Rule RiskRule `json:"rule"`
+
+	// message is a human-readable explanation of the risk.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // TrialStatus defines the observed state of Trial.
 type TrialStatus struct {
 	// conditions represent the current state of the Trial resource.
@@ -321,6 +363,11 @@ type TrialStatus struct {
 	// scenarioResults records the per-scenario timeline, in execution order.
 	// +optional
 	ScenarioResults []ScenarioResult `json:"scenarioResults,omitempty"`
+
+	// risks are resilience weaknesses the controller detected on the target
+	// workload (e.g. a single replica, or no PodDisruptionBudget).
+	// +optional
+	Risks []Risk `json:"risks,omitempty"`
 
 	// haltReason explains why a safeguard stopped the trial. Only set when phase is Halted.
 	// +optional

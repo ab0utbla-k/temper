@@ -1,0 +1,61 @@
+# Demonstrates: MissingReadinessProbe
+#
+# Two replicas, anti-affinity, and a PDB — but the container defines no
+# readiness probe, so the Trial reports MissingReadinessProbe. Only readiness
+# is required: it gates traffic. A liveness probe is not checked.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-missing-probes
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: risk-missing-probes
+  template:
+    metadata:
+      labels:
+        app: risk-missing-probes
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: risk-missing-probes
+      containers:
+        - name: app
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: risk-missing-probes
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: risk-missing-probes
+---
+apiVersion: temper.io/v1alpha1
+kind: Trial
+metadata:
+  name: risk-missing-probes
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  target:
+    kind: Deployment
+    name: risk-missing-probes
+  scenarios:
+    - type: pod-kill
+      duration: 60s
+      podKill:
+        count: 1

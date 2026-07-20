@@ -1,0 +1,84 @@
+# Demonstrates: ConcentratedPlacement
+#
+# Two probed replicas with a PDB — but a required self pod-affinity forces the
+# scheduler to pack both pods onto the same node. Because affinity is defined
+# (podAntiAffinity is not required for the NoPodAntiAffinity check, but this
+# template also adds a topologySpreadConstraint with a huge skew to satisfy
+# it without actually spreading), the Trial reports only ConcentratedPlacement
+# once both pods are Running on one node.
+#
+# Mitigate live: remove the podAffinity block (or delete one pod after
+# removing it) so pods spread across nodes, and watch the risk disappear.
+# Requires a cluster with 2+ schedulable nodes for the mitigation step.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-concentrated
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: risk-concentrated
+  template:
+    metadata:
+      labels:
+        app: risk-concentrated
+    spec:
+      # Deliberately pack all replicas onto one node.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: risk-concentrated
+      # Satisfies the NoPodAntiAffinity check without spreading anything:
+      # maxSkew is far larger than the replica count.
+      topologySpreadConstraints:
+        - maxSkew: 10
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: risk-concentrated
+      containers:
+        - name: app
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: risk-concentrated
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: risk-concentrated
+---
+apiVersion: temper.io/v1alpha1
+kind: Trial
+metadata:
+  name: risk-concentrated
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  target:
+    kind: Deployment
+    name: risk-concentrated
+  scenarios:
+    - type: pod-kill
+      duration: 60s
+      podKill:
+        count: 1

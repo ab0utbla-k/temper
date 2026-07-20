@@ -1,0 +1,109 @@
+# Demonstrates: Outcome=Failed (recovery never observed)
+#
+# The readiness probe always returns HTTP 503, so pods reach the Running
+# phase (injection works) but never become Ready. The pod-kill recovery
+# probe requires the Deployment to report full readiness, which never
+# happens — after the 30s scenario duration the Trial concludes:
+#
+#   Phase:   Completed
+#   Outcome: Failed
+#
+# The workload is hardened against every risk rule (2 replicas,
+# anti-affinity, PDB, both probes) so status.risks stays empty and the
+# failure clearly comes from the unrecoverable readiness probe.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: outcome-failing-readiness
+  labels:
+    app.kubernetes.io/name: temper
+data:
+  default.conf: |
+    server {
+        listen 80;
+
+        # Readiness endpoint: always a 5xx, so the pod is never Ready.
+        location /healthz {
+            return 503;
+        }
+
+        # Liveness endpoint: healthy, so the container is not restarted.
+        location /livez {
+            return 200 'ok';
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outcome-failing-readiness
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: outcome-failing-readiness
+  template:
+    metadata:
+      labels:
+        app: outcome-failing-readiness
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: outcome-failing-readiness
+      containers:
+        - name: app
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            periodSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 80
+            periodSeconds: 5
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: outcome-failing-readiness
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: outcome-failing-readiness
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: outcome-failing-readiness
+---
+apiVersion: temper.io/v1alpha1
+kind: Trial
+metadata:
+  name: outcome-failing-readiness
+  labels:
+    app.kubernetes.io/name: temper
+spec:
+  target:
+    kind: Deployment
+    name: outcome-failing-readiness
+  scenarios:
+    - type: pod-kill
+      duration: 30s
+      podKill:
+        count: 1

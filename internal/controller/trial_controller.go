@@ -35,6 +35,7 @@ import (
 
 	temperv1alpha1 "github.com/ab0utbla-k/temper/api/v1alpha1"
 	"github.com/ab0utbla-k/temper/internal/metrics"
+	"github.com/ab0utbla-k/temper/internal/risk"
 	"github.com/ab0utbla-k/temper/internal/scenario"
 )
 
@@ -59,9 +60,10 @@ type TrialReconciler struct {
 // +kubebuilder:rbac:groups=temper.io,resources=trials/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=temper.io,resources=trials/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
-// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;update
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
@@ -181,6 +183,11 @@ func (r *TrialReconciler) scenarioFor(trial *temperv1alpha1.Trial, spec temperv1
 func (r *TrialReconciler) reconcilePending(ctx context.Context, trial *temperv1alpha1.Trial) (ctrl.Result, error) {
 	trial.Status.Phase = temperv1alpha1.TrialPhaseRunning
 
+	// Detect resilience risks on the target and record them before scenarios
+	// inject. Detection is advisory and best-effort: a failure is logged but
+	// never blocks or fails the Trial.
+	r.detectRisks(ctx, trial)
+
 	if err := r.Status().Update(ctx, trial); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status to Running: %w", err)
 	}
@@ -188,7 +195,114 @@ func (r *TrialReconciler) reconcilePending(ctx context.Context, trial *temperv1a
 	return ctrl.Result{RequeueAfter: time.Second}, nil
 }
 
+// detectRisks refreshes trial.Status.Risks against the target workload's
+// current state: newly detected risks are added and mitigated risks are
+// removed. It reports whether the recorded set changed so callers know a
+// status write is needed. It is advisory and never returns an error:
+// detection problems are logged and leave Risks untouched (never wiped) so
+// the Trial still runs.
+func (r *TrialReconciler) detectRisks(ctx context.Context, trial *temperv1alpha1.Trial) bool {
+	log := logf.FromContext(ctx)
+
+	if trial.Spec.Target.Name == nil {
+		log.Info("Skipping risk detection: target has no name",
+			"targetKind", trial.Spec.Target.Kind)
+		return false
+	}
+
+	// Carry the full target reference on every line so risk detection is easy
+	// to trace and debug per Trial.
+	log = log.WithValues(
+		"targetKind", trial.Spec.Target.Kind,
+		"targetNamespace", trial.Namespace,
+		"targetName", *trial.Spec.Target.Name,
+	)
+	// Push the enriched logger into the context so the per-rule evaluation
+	// logs inside the risk package carry the same target reference.
+	ctx = logf.IntoContext(ctx, log)
+
+	log.Info("Detecting target risks")
+
+	risks, err := risk.Detect(ctx, r.Client,
+		trial.Spec.Target.Kind, trial.Namespace, *trial.Spec.Target.Name)
+	if err != nil {
+		log.Error(err, "Failed to detect target risks")
+		return false
+	}
+
+	if risksEqual(trial.Status.Risks, risks) {
+		log.Info("Target risks unchanged", "count", len(risks))
+		return false
+	}
+
+	if added := diffRules(risks, trial.Status.Risks); len(added) > 0 {
+		log.Info("Detected new target risks", "rules", added)
+		// Count only newly detected rules: detection re-runs on every refresh,
+		// so counting the whole set would inflate on every reconcile.
+		for _, rule := range added {
+			metrics.RisksDetectedTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), rule).Inc()
+		}
+	}
+	if removed := diffRules(trial.Status.Risks, risks); len(removed) > 0 {
+		log.Info("Removed mitigated target risks", "rules", removed)
+	}
+
+	if len(risks) == 0 {
+		log.Info("Detected no target risks")
+	} else {
+		rules := make([]string, len(risks))
+		for i, rk := range risks {
+			rules[i] = string(rk.Rule)
+		}
+		log.Info("Updated target risks", "count", len(risks), "rules", rules)
+	}
+
+	trial.Status.Risks = risks
+	return true
+}
+
+// risksEqual reports whether two risk sets carry the same rules and messages
+// in the same order (detection output is deterministic).
+func risksEqual(a, b []temperv1alpha1.Risk) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Rule != b[i].Rule || a[i].Message != b[i].Message {
+			return false
+		}
+	}
+	return true
+}
+
+// diffRules returns the rule tokens present in a but absent from b.
+func diffRules(a, b []temperv1alpha1.Risk) []string {
+	in := make(map[temperv1alpha1.RiskRule]bool, len(b))
+	for _, rk := range b {
+		in[rk.Rule] = true
+	}
+	var out []string
+	for _, rk := range a {
+		if !in[rk.Rule] {
+			out = append(out, string(rk.Rule))
+		}
+	}
+	return out
+}
+
 func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1alpha1.Trial) (ctrl.Result, error) {
+	// Keep status.risks current on every pass, independent of scenario
+	// execution: risks whose condition was mitigated since the last pass
+	// disappear, newly introduced ones appear. Persist immediately because
+	// several paths below return without another status write. Best-effort:
+	// a failed write is retried naturally on the next pass.
+	if r.detectRisks(ctx, trial) {
+		if err := r.Status().Update(ctx, trial); err != nil {
+			logf.FromContext(ctx).Error(err, "Failed to persist updated risks")
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+	}
+
 	idx := int(trial.Status.CurrentScenarioIndex)
 	if idx >= len(trial.Spec.Scenarios) {
 		return r.completeTrial(ctx, trial)
@@ -199,41 +313,7 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 
 	// State 1: Not yet injected — inject now.
 	if trial.Status.InjectedAt == nil {
-		s, err := r.scenarioFor(trial, spec)
-		if err != nil {
-			return r.failTrial(ctx, trial, fmt.Sprintf("Build scenario: %v", err))
-		}
-
-		// Persist intent before the side effect: if this write fails, nothing
-		// was injected and the retry is safe. Writing after Inject risks a
-		// second injection when the write is lost (crash, conflict).
-		trial.Status.InjectedAt = new(metav1.Now())
-		if err := r.Status().Update(ctx, trial); err != nil {
-			return ctrl.Result{}, fmt.Errorf("update status before inject: %w", err)
-		}
-
-		result, err := s.Inject(ctx, target)
-		if err != nil {
-			if errors.Is(err, scenario.ErrTargetNotInjectable) && time.Since(trial.CreationTimestamp.Time) < targetReadyGrace {
-				// Target's pods aren't up yet and nothing was injected — clear the
-				// intent marker and retry instead of failing permanently.
-				trial.Status.InjectedAt = nil
-				if err := r.Status().Update(ctx, trial); err != nil {
-					return ctrl.Result{}, fmt.Errorf("clear InjectedAt: %w", err)
-				}
-
-				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-			}
-			// InjectedAt stays set: clearing it would reopen the double-inject
-			// window for a partially applied Inject.
-			return r.failTrial(ctx, trial, fmt.Sprintf("Inject %s: %v", spec.Type, err))
-		}
-
-		if result.Incomplete {
-			trial.Status.InjectionIncomplete = true
-		}
-
-		return r.recordInjectResult(ctx, trial, spec, result, idx)
+		return r.injectScenario(ctx, trial, spec, target, idx)
 	}
 
 	if trial.Status.InjectionIncomplete {
@@ -369,20 +449,82 @@ func (r *TrialReconciler) continueInjection(
 		return r.failTrial(ctx, trial, fmt.Sprintf("Inject %s: %v", spec.Type, err))
 	}
 
+	// Only write status when something actually changed. A write here wakes our
+	// own watch, so an unconditional one re-enters Reconcile immediately and
+	// turns the RequeueAfter below into a hot loop: every blocked attempt would
+	// retry the eviction API at once instead of once per interval. While a PDB
+	// keeps refusing, the findings repeat and there is nothing new to record.
+	changed := false
+
 	// The latest attempt is the truth: replace the row's findings, don't append.
 	if n := len(trial.Status.ScenarioResults); n > 0 {
-		trial.Status.ScenarioResults[n-1].Findings = apiFindings(result.Findings)
+		latest := apiFindings(result.Findings)
+		if !findingsEqual(trial.Status.ScenarioResults[n-1].Findings, latest) {
+			trial.Status.ScenarioResults[n-1].Findings = latest
+			changed = true
+		}
 	}
 
-	if !result.Incomplete {
+	if !result.Incomplete && trial.Status.InjectionIncomplete {
 		trial.Status.InjectionIncomplete = false
+		changed = true
 	}
 
-	if err := r.Status().Update(ctx, trial); err != nil {
-		return ctrl.Result{}, fmt.Errorf("update status after injection retry: %w", err)
+	if changed {
+		if err := r.Status().Update(ctx, trial); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update status after injection retry: %w", err)
+		}
 	}
 
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+}
+
+// injectScenario runs the first injection for the current scenario: it builds
+// the scenario, persists the injection intent, injects, and hands off to
+// recordInjectResult. Split out of reconcileRunning to keep that function at
+// one level of abstraction (and under the complexity budget).
+func (r *TrialReconciler) injectScenario(
+	ctx context.Context,
+	trial *temperv1alpha1.Trial,
+	spec temperv1alpha1.Scenario,
+	target scenario.Target,
+	idx int,
+) (ctrl.Result, error) {
+	s, err := r.scenarioFor(trial, spec)
+	if err != nil {
+		return r.failTrial(ctx, trial, fmt.Sprintf("Build scenario: %v", err))
+	}
+
+	// Persist intent before the side effect: if this write fails, nothing
+	// was injected and the retry is safe. Writing after Inject risks a
+	// second injection when the write is lost (crash, conflict).
+	trial.Status.InjectedAt = new(metav1.Now())
+	if err := r.Status().Update(ctx, trial); err != nil {
+		return ctrl.Result{}, fmt.Errorf("update status before inject: %w", err)
+	}
+
+	result, err := s.Inject(ctx, target)
+	if err != nil {
+		if errors.Is(err, scenario.ErrTargetNotInjectable) && time.Since(trial.CreationTimestamp.Time) < targetReadyGrace {
+			// Target's pods aren't up yet and nothing was injected — clear the
+			// intent marker and retry instead of failing permanently.
+			trial.Status.InjectedAt = nil
+			if err := r.Status().Update(ctx, trial); err != nil {
+				return ctrl.Result{}, fmt.Errorf("clear InjectedAt: %w", err)
+			}
+
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		}
+		// InjectedAt stays set: clearing it would reopen the double-inject
+		// window for a partially applied Inject.
+		return r.failTrial(ctx, trial, fmt.Sprintf("Inject %s: %v", spec.Type, err))
+	}
+
+	if result.Incomplete {
+		trial.Status.InjectionIncomplete = true
+	}
+
+	return r.recordInjectResult(ctx, trial, spec, result, idx)
 }
 
 // recordInjectResult persists the post-inject status and emits the scenario's
@@ -552,6 +694,21 @@ func checkHTTPRecovery(ctx context.Context, probe *scenario.HTTPProbe) (bool, er
 	defer resp.Body.Close()
 
 	return resp.StatusCode >= 200 && resp.StatusCode < 300, nil
+}
+
+// findingsEqual reports whether two finding sets carry the same content, so a
+// retry that reproduces the same findings can skip a status write. Order is
+// significant: both come from the same scenario walking pods in list order.
+func findingsEqual(a, b []temperv1alpha1.Finding) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Reason != b[i].Reason || a[i].Message != b[i].Message {
+			return false
+		}
+	}
+	return true
 }
 
 // apiFindings converts scenario findings into their API status form.

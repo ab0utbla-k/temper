@@ -347,6 +347,31 @@ spec:
                   scenario's fault.
                 format: date-time
                 type: string
+              risks:
+                description: |-
+                  risks are resilience weaknesses the controller detected on the target
+                  workload (e.g. a single replica, or no PodDisruptionBudget).
+                items:
+                  description: |-
+                    Risk is one resilience weakness the controller detected on the target
+                    workload. It pairs a machine-readable rule token with a human sentence,
+                    the same shape as Finding (reason + message) and HaltCode. The workload it
+                    applies to is the Trial's target (spec.target).
+                  properties:
+                    message:
+                      description: message is a human-readable explanation of the
+                        risk.
+                      type: string
+                    rule:
+                      description: |-
+                        rule is a machine-readable token identifying the risk kind, so risks can
+                        be grouped and counted. See RiskRule for the values temper emits today;
+                        the set grows as rules are added, so treat unknown values as opaque.
+                      type: string
+                  required:
+                  - rule
+                  type: object
+                type: array
               scenarioResults:
                 description: scenarioResults records the per-scenario timeline, in
                   execution order.
