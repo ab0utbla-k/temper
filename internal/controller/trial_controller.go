@@ -59,7 +59,7 @@ type TrialReconciler struct {
 // +kubebuilder:rbac:groups=temper.io,resources=trials/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=temper.io,resources=trials/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;update
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch
