@@ -114,7 +114,7 @@ func TestRiskCheckNoPodAntiAffinity(t *testing.T) {
 	}
 }
 
-func TestRiskCheckMissingHealthProbes(t *testing.T) {
+func TestRiskCheckMissingReadinessProbe(t *testing.T) {
 	probe := &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz"}}}
 
 	both := corev1.Container{Name: "app", ReadinessProbe: probe, LivenessProbe: probe}
@@ -128,7 +128,9 @@ func TestRiskCheckMissingHealthProbes(t *testing.T) {
 		want       bool
 	}{
 		{"both probes clean", []corev1.Container{both}, false},
-		{"missing liveness flags", []corev1.Container{onlyReadiness}, true},
+		// Liveness is deliberately not required: readiness is what gates
+		// traffic, and a needless liveness probe mostly buys restart loops.
+		{"readiness only is clean", []corev1.Container{onlyReadiness}, false},
 		{"missing readiness flags", []corev1.Container{onlyLiveness}, true},
 		{"no probes flags", []corev1.Container{neither}, true},
 		{"one good one bad flags", []corev1.Container{both, neither}, true},
@@ -137,9 +139,9 @@ func TestRiskCheckMissingHealthProbes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			wl := resilientWorkload()
 			wl.template.Spec.Containers = tc.containers
-			got := checkMissingHealthProbes(wl) != nil
+			got := checkMissingReadinessProbe(wl) != nil
 			if got != tc.want {
-				t.Fatalf("checkMissingHealthProbes present=%v, want %v", got, tc.want)
+				t.Fatalf("checkMissingReadinessProbe present=%v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -154,6 +156,16 @@ func TestRiskCheckNoPodDisruptionBudget(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: ns},
 		Spec:       policyv1.PodDisruptionBudgetSpec{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "other"}}},
 	}
+	// policy/v1: an empty ({}) selector selects every pod in the namespace,
+	// so it protects the target; a null selector matches nothing.
+	namespaceWide := policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{Name: "ns-wide", Namespace: ns},
+		Spec:       policyv1.PodDisruptionBudgetSpec{Selector: &metav1.LabelSelector{}},
+	}
+	nullSelector := policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{Name: "null-sel", Namespace: ns},
+		Spec:       policyv1.PodDisruptionBudgetSpec{},
+	}
 
 	tests := []struct {
 		name string
@@ -164,6 +176,8 @@ func TestRiskCheckNoPodDisruptionBudget(t *testing.T) {
 		{"non-matching pdb flags", []policyv1.PodDisruptionBudget{nonMatching}, true},
 		{"matching pdb clean", []policyv1.PodDisruptionBudget{matching}, false},
 		{"matching among others clean", []policyv1.PodDisruptionBudget{nonMatching, matching}, false},
+		{"namespace-wide empty selector clean", []policyv1.PodDisruptionBudget{namespaceWide}, false},
+		{"null selector flags", []policyv1.PodDisruptionBudget{nullSelector}, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,7 +264,7 @@ func TestDetectRiskyDeploymentAllFiveTokens(t *testing.T) {
 	for _, want := range []temperv1alpha1.RiskRule{
 		temperv1alpha1.RiskSingleReplica,
 		temperv1alpha1.RiskNoPodAntiAffinity,
-		temperv1alpha1.RiskMissingHealthProbes,
+		temperv1alpha1.RiskMissingReadinessProbe,
 		temperv1alpha1.RiskNoPodDisruptionBudget,
 		temperv1alpha1.RiskConcentratedPlacement,
 	} {
@@ -322,7 +336,7 @@ func TestDetectRiskyStatefulSet(t *testing.T) {
 	for _, want := range []temperv1alpha1.RiskRule{
 		temperv1alpha1.RiskSingleReplica,
 		temperv1alpha1.RiskNoPodAntiAffinity,
-		temperv1alpha1.RiskMissingHealthProbes,
+		temperv1alpha1.RiskMissingReadinessProbe,
 		temperv1alpha1.RiskNoPodDisruptionBudget,
 	} {
 		if !hasRule(risks, want) {
@@ -377,8 +391,8 @@ func TestDetectMitigationPerRule(t *testing.T) {
 			},
 		},
 		{
-			name: "adding probes clears MissingHealthProbes",
-			rule: temperv1alpha1.RiskMissingHealthProbes,
+			name: "adding probes clears MissingReadinessProbe",
+			rule: temperv1alpha1.RiskMissingReadinessProbe,
 			mitigate: func(t *testing.T, c client.Client) {
 				t.Helper()
 				var dep appsv1.Deployment
@@ -504,7 +518,7 @@ func TestRuleRegistryCompleteAndUnique(t *testing.T) {
 	want := []temperv1alpha1.RiskRule{
 		temperv1alpha1.RiskSingleReplica,
 		temperv1alpha1.RiskNoPodAntiAffinity,
-		temperv1alpha1.RiskMissingHealthProbes,
+		temperv1alpha1.RiskMissingReadinessProbe,
 		temperv1alpha1.RiskNoPodDisruptionBudget,
 		temperv1alpha1.RiskConcentratedPlacement,
 	}

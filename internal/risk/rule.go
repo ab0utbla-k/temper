@@ -42,7 +42,7 @@ type Rule interface {
 var rules = []Rule{
 	singleReplicaRule{},
 	noPodAntiAffinityRule{},
-	missingHealthProbesRule{},
+	missingReadinessProbeRule{},
 	noPodDisruptionBudgetRule{},
 	concentratedPlacementRule{},
 }
@@ -72,19 +72,18 @@ func (r noPodAntiAffinityRule) Detect(s Snapshot) *temperv1alpha1.Risk {
 
 func (r noPodAntiAffinityRule) Mitigated(s Snapshot) bool { return r.Detect(s) == nil }
 
-// missingHealthProbesRule flags containers lacking readiness or liveness
-// probes.
-type missingHealthProbesRule struct{}
+// missingReadinessProbeRule flags containers lacking a readiness probe.
+type missingReadinessProbeRule struct{}
 
-func (missingHealthProbesRule) ID() temperv1alpha1.RiskRule {
-	return temperv1alpha1.RiskMissingHealthProbes
+func (missingReadinessProbeRule) ID() temperv1alpha1.RiskRule {
+	return temperv1alpha1.RiskMissingReadinessProbe
 }
 
-func (r missingHealthProbesRule) Detect(s Snapshot) *temperv1alpha1.Risk {
-	return checkMissingHealthProbes(s.Workload)
+func (r missingReadinessProbeRule) Detect(s Snapshot) *temperv1alpha1.Risk {
+	return checkMissingReadinessProbe(s.Workload)
 }
 
-func (r missingHealthProbesRule) Mitigated(s Snapshot) bool { return r.Detect(s) == nil }
+func (r missingReadinessProbeRule) Mitigated(s Snapshot) bool { return r.Detect(s) == nil }
 
 // noPodDisruptionBudgetRule flags a workload no PodDisruptionBudget selects.
 type noPodDisruptionBudgetRule struct{}

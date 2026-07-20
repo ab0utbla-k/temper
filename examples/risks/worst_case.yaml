@@ -1,4 +1,4 @@
-# Demonstrates: SingleReplica + NoPodAntiAffinity + MissingHealthProbes +
+# Demonstrates: SingleReplica + NoPodAntiAffinity + MissingReadinessProbe +
 #                NoPodDisruptionBudget (four risks at once)
 #
 # A completely bare single-replica deployment: no probes, no anti-affinity,

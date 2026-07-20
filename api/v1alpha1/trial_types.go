@@ -31,9 +31,9 @@ import (
 // Target specifies which workload to inject faults into.
 // Exactly one of name or selector must be set.
 type Target struct {
-	// kind is the target resource type (e.g., Deployment, StatefulSet).
+	// kind is the target resource type (e.g., Deployment).
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=Deployment;StatefulSet
+	// +kubebuilder:validation:Enum=Deployment
 	Kind string `json:"kind"`
 
 	// name targets a specific resource by name. Mutually exclusive with selector.
@@ -273,10 +273,11 @@ type Finding struct {
 	Message string `json:"message,omitempty"`
 }
 
-// RiskRule is a bounded bucket for a resilience risk the controller detected
-// on the target workload before or during a trial. Like HaltCode, the value
-// space is fixed so risks can be grouped, counted, and displayed cleanly.
-// +kubebuilder:validation:Enum=SingleReplica;NoPodDisruptionBudget;ConcentratedPlacement;NoPodAntiAffinity;MissingHealthProbes
+// RiskRule identifies a resilience risk detected on the target workload. The
+// constants below are the values temper emits today and are what metric labels
+// are built from, so that label stays bounded. The field itself is deliberately
+// not a CRD enum: the rule set is a lint catalogue that grows, and freezing it
+// into the API would make every new rule a CRD change.
 type RiskRule string
 
 const (
@@ -290,13 +291,13 @@ const (
 	// nodes, so a single node loss disrupts a large fraction of them.
 	RiskConcentratedPlacement RiskRule = "ConcentratedPlacement"
 	// RiskNoPodAntiAffinity means the target's pod template defines neither pod
-	// anti-affinity nor topology spread constraints, so the scheduler is free
-	// to pack all replicas onto one node.
+	// anti-affinity nor topology spread constraints, so nothing stops the
+	// scheduler from packing all replicas onto one node.
 	RiskNoPodAntiAffinity RiskRule = "NoPodAntiAffinity"
-	// RiskMissingHealthProbes means at least one container in the target lacks
-	// a readiness or liveness probe, so Kubernetes cannot tell when the app is
-	// ready or needs a restart.
-	RiskMissingHealthProbes RiskRule = "MissingHealthProbes"
+	// RiskMissingReadinessProbe means at least one container in the target lacks
+	// a readiness probe, so Kubernetes cannot tell when it can serve traffic and
+	// routes to it as soon as it starts.
+	RiskMissingReadinessProbe RiskRule = "MissingReadinessProbe"
 )
 
 // Risk is one resilience weakness the controller detected on the target
@@ -304,8 +305,9 @@ const (
 // the same shape as Finding (reason + message) and HaltCode. The workload it
 // applies to is the Trial's target (spec.target).
 type Risk struct {
-	// rule is a machine-readable token identifying the risk kind. It is one of
-	// a fixed set (see RiskRule) so risks can be grouped and counted.
+	// rule is a machine-readable token identifying the risk kind, so risks can
+	// be grouped and counted. See RiskRule for the values temper emits today;
+	// the set grows as rules are added, so treat unknown values as opaque.
 	Rule RiskRule `json:"rule"`
 
 	// message is a human-readable explanation of the risk.

@@ -237,6 +237,11 @@ func (r *TrialReconciler) detectRisks(ctx context.Context, trial *temperv1alpha1
 
 	if added := diffRules(risks, trial.Status.Risks); len(added) > 0 {
 		log.Info("Detected new target risks", "rules", added)
+		// Count only newly detected rules: detection re-runs on every refresh,
+		// so counting the whole set would inflate on every reconcile.
+		for _, rule := range added {
+			metrics.RisksDetectedTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), rule).Inc()
+		}
 	}
 	if removed := diffRules(trial.Status.Risks, risks); len(removed) > 0 {
 		log.Info("Removed mitigated target risks", "rules", removed)
@@ -308,41 +313,7 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 
 	// State 1: Not yet injected — inject now.
 	if trial.Status.InjectedAt == nil {
-		s, err := r.scenarioFor(trial, spec)
-		if err != nil {
-			return r.failTrial(ctx, trial, fmt.Sprintf("Build scenario: %v", err))
-		}
-
-		// Persist intent before the side effect: if this write fails, nothing
-		// was injected and the retry is safe. Writing after Inject risks a
-		// second injection when the write is lost (crash, conflict).
-		trial.Status.InjectedAt = new(metav1.Now())
-		if err := r.Status().Update(ctx, trial); err != nil {
-			return ctrl.Result{}, fmt.Errorf("update status before inject: %w", err)
-		}
-
-		result, err := s.Inject(ctx, target)
-		if err != nil {
-			if errors.Is(err, scenario.ErrTargetNotInjectable) && time.Since(trial.CreationTimestamp.Time) < targetReadyGrace {
-				// Target's pods aren't up yet and nothing was injected — clear the
-				// intent marker and retry instead of failing permanently.
-				trial.Status.InjectedAt = nil
-				if err := r.Status().Update(ctx, trial); err != nil {
-					return ctrl.Result{}, fmt.Errorf("clear InjectedAt: %w", err)
-				}
-
-				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-			}
-			// InjectedAt stays set: clearing it would reopen the double-inject
-			// window for a partially applied Inject.
-			return r.failTrial(ctx, trial, fmt.Sprintf("Inject %s: %v", spec.Type, err))
-		}
-
-		if result.Incomplete {
-			trial.Status.InjectionIncomplete = true
-		}
-
-		return r.recordInjectResult(ctx, trial, spec, result, idx)
+		return r.injectScenario(ctx, trial, spec, target, idx)
 	}
 
 	if trial.Status.InjectionIncomplete {
@@ -492,6 +463,54 @@ func (r *TrialReconciler) continueInjection(
 	}
 
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+}
+
+// injectScenario runs the first injection for the current scenario: it builds
+// the scenario, persists the injection intent, injects, and hands off to
+// recordInjectResult. Split out of reconcileRunning to keep that function at
+// one level of abstraction (and under the complexity budget).
+func (r *TrialReconciler) injectScenario(
+	ctx context.Context,
+	trial *temperv1alpha1.Trial,
+	spec temperv1alpha1.Scenario,
+	target scenario.Target,
+	idx int,
+) (ctrl.Result, error) {
+	s, err := r.scenarioFor(trial, spec)
+	if err != nil {
+		return r.failTrial(ctx, trial, fmt.Sprintf("Build scenario: %v", err))
+	}
+
+	// Persist intent before the side effect: if this write fails, nothing
+	// was injected and the retry is safe. Writing after Inject risks a
+	// second injection when the write is lost (crash, conflict).
+	trial.Status.InjectedAt = new(metav1.Now())
+	if err := r.Status().Update(ctx, trial); err != nil {
+		return ctrl.Result{}, fmt.Errorf("update status before inject: %w", err)
+	}
+
+	result, err := s.Inject(ctx, target)
+	if err != nil {
+		if errors.Is(err, scenario.ErrTargetNotInjectable) && time.Since(trial.CreationTimestamp.Time) < targetReadyGrace {
+			// Target's pods aren't up yet and nothing was injected — clear the
+			// intent marker and retry instead of failing permanently.
+			trial.Status.InjectedAt = nil
+			if err := r.Status().Update(ctx, trial); err != nil {
+				return ctrl.Result{}, fmt.Errorf("clear InjectedAt: %w", err)
+			}
+
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		}
+		// InjectedAt stays set: clearing it would reopen the double-inject
+		// window for a partially applied Inject.
+		return r.failTrial(ctx, trial, fmt.Sprintf("Inject %s: %v", spec.Type, err))
+	}
+
+	if result.Incomplete {
+		trial.Status.InjectionIncomplete = true
+	}
+
+	return r.recordInjectResult(ctx, trial, spec, result, idx)
 }
 
 // recordInjectResult persists the post-inject status and emits the scenario's

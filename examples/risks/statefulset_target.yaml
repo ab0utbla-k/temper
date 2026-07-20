@@ -1,12 +1,17 @@
-# Demonstrates: risk detection on a StatefulSet target
-#                (SingleReplica + NoPodAntiAffinity + MissingHealthProbes +
+# Demonstrates: risk detection on a StatefulSet
+#                (SingleReplica + NoPodAntiAffinity + MissingReadinessProbe +
 #                 NoPodDisruptionBudget)
 #
-# StatefulSet is supported by the risk detector only: risks are detected and
-# written to status.risks when the Trial starts, but scenario injection
-# against a StatefulSet is not supported and will fail the Trial afterwards.
-# The detected risks remain visible in status.risks:
-#   kubectl get trial risk-statefulset -o jsonpath='{.status.risks}' | jq
+# There is deliberately no Trial here. A Trial cannot target a StatefulSet —
+# the scenarios only inject into Deployments — so spec.target.kind rejects it.
+# The rules read a StatefulSet fine, though, so lint it with the read-only
+# scanner instead:
+#
+#   kubectl apply -f examples/risks/statefulset_target.yaml
+#   make riskscan RISKSCAN_NAMESPACE=default
+#
+# That is the point of the scanner: static checks are cheap and safe, so they
+# should not require injecting a fault to get at them.
 apiVersion: v1
 kind: Service
 metadata:
@@ -42,19 +47,3 @@ spec:
           image: nginx:1.27-alpine
           ports:
             - containerPort: 80
----
-apiVersion: temper.io/v1alpha1
-kind: Trial
-metadata:
-  name: risk-statefulset
-  labels:
-    app.kubernetes.io/name: temper
-spec:
-  target:
-    kind: StatefulSet
-    name: risk-statefulset
-  scenarios:
-    - type: pod-kill
-      duration: 60s
-      podKill:
-        count: 1

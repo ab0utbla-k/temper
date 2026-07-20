@@ -63,6 +63,14 @@ var (
 		Name: "temper_evictions_blocked_total",
 		Help: "Total number of evictions blocked by a PodDisruptionBudget.",
 	}, []string{"namespace", "source"})
+
+	// RisksDetectedTotal counts static resilience risks found on trial targets.
+	// The rule label is bounded by the RiskRule constants, so cardinality stays
+	// fixed even though the field itself is not a CRD enum.
+	RisksDetectedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "temper_risks_detected_total",
+		Help: "Total number of resilience risks detected on trial targets, by rule.",
+	}, []string{"namespace", "source", "rule"})
 )
 
 func init() {
@@ -77,5 +85,6 @@ func init() {
 		TrialsHaltedTotal,
 		PodsEvictedTotal,
 		EvictionsBlockedTotal,
+		RisksDetectedTotal,
 	)
 }

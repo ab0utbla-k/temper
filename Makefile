@@ -197,6 +197,12 @@ kind: kind-cluster ## Build the manager image, load it into the local Kind clust
 kind-clean: ## Delete the local Kind cluster.
 	@$(KIND) delete cluster --name $(KIND_DEV_CLUSTER)
 
+RISKSCAN_NAMESPACE ?= default
+
+.PHONY: riskscan
+riskscan: ## Report resilience risks for workloads in RISKSCAN_NAMESPACE (read-only, no Trial).
+	go run ./cmd/riskscan -namespace $(RISKSCAN_NAMESPACE) -details
+
 ##@ Dependencies
 
 ## Location to install dependencies to

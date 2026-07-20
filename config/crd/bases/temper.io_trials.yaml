@@ -158,11 +158,9 @@ spec:
                 description: target specifies which workload to inject faults into.
                 properties:
                   kind:
-                    description: kind is the target resource type (e.g., Deployment,
-                      StatefulSet).
+                    description: kind is the target resource type (e.g., Deployment).
                     enum:
                     - Deployment
-                    - StatefulSet
                     type: string
                   name:
                     description: name targets a specific resource by name. Mutually
@@ -366,14 +364,9 @@ spec:
                       type: string
                     rule:
                       description: |-
-                        rule is a machine-readable token identifying the risk kind. It is one of
-                        a fixed set (see RiskRule) so risks can be grouped and counted.
-                      enum:
-                      - SingleReplica
-                      - NoPodDisruptionBudget
-                      - ConcentratedPlacement
-                      - NoPodAntiAffinity
-                      - MissingHealthProbes
+                        rule is a machine-readable token identifying the risk kind, so risks can
+                        be grouped and counted. See RiskRule for the values temper emits today;
+                        the set grows as rules are added, so treat unknown values as opaque.
                       type: string
                   required:
                   - rule

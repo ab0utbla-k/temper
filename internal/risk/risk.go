@@ -154,18 +154,24 @@ func checkNoPodAntiAffinity(wl workload) *temperv1alpha1.Risk {
 	}
 	return &temperv1alpha1.Risk{
 		Rule:    temperv1alpha1.RiskNoPodAntiAffinity,
-		Message: "Pod template defines no pod anti-affinity or topology spread constraints; replicas may be packed onto one node. Add podAntiAffinity or topologySpreadConstraints to spread pods.",
+		Message: "Pod template defines no pod anti-affinity or topology spread constraints, so nothing stops the scheduler from packing every replica onto one node. This is a latent risk: pods may be well spread right now purely by chance, and ConcentratedPlacement reports where they actually sit. Add podAntiAffinity or topologySpreadConstraints.",
 	}
 }
 
-// checkMissingHealthProbes flags a workload where at least one non-init
-// container lacks a readiness or liveness probe.
-func checkMissingHealthProbes(wl workload) *temperv1alpha1.Risk {
+// checkMissingReadinessProbe flags a workload where at least one container has
+// no readiness probe. Only readiness is checked: it is what gates traffic and
+// therefore disruption safety. A liveness probe is deliberately not required —
+// an unnecessary one mostly buys restart loops.
+//
+// Note this proves a probe exists, not that it is honest: a readiness probe
+// that returns 200 before the app can actually serve still passes here.
+// Catching that is the experiment's job, not the linter's.
+func checkMissingReadinessProbe(wl workload) *temperv1alpha1.Risk {
 	for _, ctr := range wl.template.Spec.Containers {
-		if ctr.ReadinessProbe == nil || ctr.LivenessProbe == nil {
+		if ctr.ReadinessProbe == nil {
 			return &temperv1alpha1.Risk{
-				Rule:    temperv1alpha1.RiskMissingHealthProbes,
-				Message: fmt.Sprintf("Container %q is missing a readiness or liveness probe; Kubernetes cannot tell when it is ready or needs a restart. Define both probes.", ctr.Name),
+				Rule:    temperv1alpha1.RiskMissingReadinessProbe,
+				Message: fmt.Sprintf("Container %q has no readiness probe; Kubernetes sends traffic to it as soon as it starts, before it can serve. Define a readinessProbe.", ctr.Name),
 			}
 		}
 	}
@@ -187,7 +193,10 @@ func checkNoPodDisruptionBudget(wl workload, pdbs []policyv1.PodDisruptionBudget
 			// keep scanning the rest.
 			continue
 		}
-		if !selector.Empty() && selector.Matches(podLabels) {
+		// An empty ({}) selector is not "no selector": in policy/v1 it selects
+		// every pod in the namespace, so such a PDB does protect the target.
+		// (A null selector matches nothing and is skipped above.)
+		if selector.Empty() || selector.Matches(podLabels) {
 			return nil
 		}
 	}

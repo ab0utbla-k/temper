@@ -1,7 +1,8 @@
-# Demonstrates: MissingHealthProbes
+# Demonstrates: MissingReadinessProbe
 #
-# Two replicas, anti-affinity, and a PDB — but the container defines neither
-# a readiness nor a liveness probe, so the Trial reports MissingHealthProbes.
+# Two replicas, anti-affinity, and a PDB — but the container defines no
+# readiness probe, so the Trial reports MissingReadinessProbe. Only readiness
+# is required: it gates traffic. A liveness probe is not checked.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
