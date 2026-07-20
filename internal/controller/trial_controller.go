@@ -449,17 +449,31 @@ func (r *TrialReconciler) continueInjection(
 		return r.failTrial(ctx, trial, fmt.Sprintf("Inject %s: %v", spec.Type, err))
 	}
 
+	// Only write status when something actually changed. A write here wakes our
+	// own watch, so an unconditional one re-enters Reconcile immediately and
+	// turns the RequeueAfter below into a hot loop: every blocked attempt would
+	// retry the eviction API at once instead of once per interval. While a PDB
+	// keeps refusing, the findings repeat and there is nothing new to record.
+	changed := false
+
 	// The latest attempt is the truth: replace the row's findings, don't append.
 	if n := len(trial.Status.ScenarioResults); n > 0 {
-		trial.Status.ScenarioResults[n-1].Findings = apiFindings(result.Findings)
+		latest := apiFindings(result.Findings)
+		if !findingsEqual(trial.Status.ScenarioResults[n-1].Findings, latest) {
+			trial.Status.ScenarioResults[n-1].Findings = latest
+			changed = true
+		}
 	}
 
-	if !result.Incomplete {
+	if !result.Incomplete && trial.Status.InjectionIncomplete {
 		trial.Status.InjectionIncomplete = false
+		changed = true
 	}
 
-	if err := r.Status().Update(ctx, trial); err != nil {
-		return ctrl.Result{}, fmt.Errorf("update status after injection retry: %w", err)
+	if changed {
+		if err := r.Status().Update(ctx, trial); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update status after injection retry: %w", err)
+		}
 	}
 
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
@@ -680,6 +694,21 @@ func checkHTTPRecovery(ctx context.Context, probe *scenario.HTTPProbe) (bool, er
 	defer resp.Body.Close()
 
 	return resp.StatusCode >= 200 && resp.StatusCode < 300, nil
+}
+
+// findingsEqual reports whether two finding sets carry the same content, so a
+// retry that reproduces the same findings can skip a status write. Order is
+// significant: both come from the same scenario walking pods in list order.
+func findingsEqual(a, b []temperv1alpha1.Finding) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Reason != b[i].Reason || a[i].Message != b[i].Message {
+			return false
+		}
+	}
+	return true
 }
 
 // apiFindings converts scenario findings into their API status form.

@@ -228,11 +228,15 @@ var _ = Describe("Trial Controller", func() {
 		trial := createNodeDrainTrial(ctx, "exp-yielding", "default", dep.Name, 5*time.Second, 30*time.Second)
 		key := client.ObjectKeyFromObject(trial)
 
+		// Assert the retry happened via the stub's call counter, which only
+		// grows. Polling status.injectionIncomplete instead would race the
+		// controller: it is a mid-flight flag that clears as soon as the stub
+		// yields, so a run that gets through the attempts between two polls
+		// never observes it. The flag is still asserted below, where it has
+		// settled.
 		Eventually(func(g Gomega) {
-			var got temperv1alpha1.Trial
-			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
-			g.Expect(got.Status.InjectionIncomplete).To(BeTrue())
-		}, timeout, interval).Should(Succeed())
+			g.Expect(yieldingInjectCalls.Load()).To(BeNumerically(">=", 3))
+		}, 20*time.Second, interval).Should(Succeed())
 
 		// The stub yields on the third attempt: the flag drops and the trial
 		// runs to a normal end — anything but Blocked.
