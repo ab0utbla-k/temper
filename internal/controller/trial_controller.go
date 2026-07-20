@@ -217,6 +217,9 @@ func (r *TrialReconciler) detectRisks(ctx context.Context, trial *temperv1alpha1
 		"targetNamespace", trial.Namespace,
 		"targetName", *trial.Spec.Target.Name,
 	)
+	// Push the enriched logger into the context so the per-rule evaluation
+	// logs inside the risk package carry the same target reference.
+	ctx = logf.IntoContext(ctx, log)
 
 	log.Info("Detecting target risks")
 

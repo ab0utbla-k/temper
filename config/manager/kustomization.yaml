@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: temper
-  newTag: dev-3b3a97c-20260720-164603
+  newTag: dev-f8e134b-20260720-171732

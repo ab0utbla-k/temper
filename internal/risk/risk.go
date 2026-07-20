@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	temperv1alpha1 "github.com/ab0utbla-k/temper/api/v1alpha1"
 )
@@ -60,7 +61,7 @@ func Detect(ctx context.Context, c client.Client, kind, namespace, name string) 
 		Pods:     podList.Items,
 		PDBs:     pdbList.Items,
 	}
-	return evaluate(snapshot), nil
+	return evaluate(ctx, snapshot), nil
 }
 
 // loadWorkload reads the target and normalizes it into a workload view.
@@ -103,15 +104,25 @@ func replicasOrDefault(r *int32) int32 {
 }
 
 // evaluate iterates the ordered rule registry over the snapshot and collects
-// the risks whose conditions hold. Pure: no cluster access, so every rule is
-// unit-testable in isolation. Registry order keeps output deterministic.
-func evaluate(s Snapshot) []temperv1alpha1.Risk {
+// the risks whose conditions hold. Pure aside from logging: no cluster
+// access, so every rule is unit-testable in isolation. Registry order keeps
+// output deterministic. Per-rule outcomes are logged at V(1) so the
+// evaluation of every rule is traceable without flooding the default level
+// on each reconcile pass.
+func evaluate(ctx context.Context, s Snapshot) []temperv1alpha1.Risk {
+	log := logf.FromContext(ctx)
+
 	var risks []temperv1alpha1.Risk
 
 	for _, rule := range rules {
-		if r := rule.Detect(s); r != nil {
-			risks = append(risks, *r)
+		r := rule.Detect(s)
+		if r == nil {
+			log.V(1).Info("Evaluated risk rule", "rule", rule.ID(), "detected", false)
+			continue
 		}
+		log.V(1).Info("Evaluated risk rule", "rule", rule.ID(), "detected", true,
+			"message", r.Message)
+		risks = append(risks, *r)
 	}
 
 	return risks
