@@ -130,11 +130,23 @@ spec:
                       required:
                       - count
                       type: object
+                    spotReclaim:
+                      description: |-
+                        spotReclaim configures the spot-reclaim scenario. Only read when type is
+                        "spot-reclaim"; omitted means default behavior (reclaim the busiest node).
+                      properties:
+                        nodeName:
+                          description: |-
+                            nodeName pins the reclaim to this node. Empty means the scenario picks
+                            the node running the most target pods.
+                          type: string
+                      type: object
                     type:
                       description: type selects which fault to inject.
                       enum:
                       - pod-kill
                       - node-drain
+                      - spot-reclaim
                       type: string
                   required:
                   - duration
@@ -377,6 +389,7 @@ spec:
                       enum:
                       - pod-kill
                       - node-drain
+                      - spot-reclaim
                       type: string
                   required:
                   - injectedAt
