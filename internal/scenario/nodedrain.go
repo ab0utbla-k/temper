@@ -9,10 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	temperv1alpha1 "github.com/ab0utbla-k/temper/api/v1alpha1"
 )
 
 // NodeDrain evicts a node's target pods via the Eviction API, simulating node loss.
@@ -34,38 +31,9 @@ func (n *NodeDrain) Inject(ctx context.Context, target Target) (Result, error) {
 		return Result{}, err
 	}
 
-	drainNode := n.NodeName
-	if drainNode == "" {
-		byNode := make(map[string]int)
-		for _, pod := range running {
-			byNode[pod.Spec.NodeName]++
-		}
-
-		var busiest string
-		mostPods := 0
-		for node, count := range byNode {
-			if count > mostPods {
-				busiest, mostPods = node, count
-			}
-		}
-		drainNode = busiest
-	}
-
-	var node corev1.Node
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if err := n.Client.Get(ctx, client.ObjectKey{Name: drainNode}, &node); err != nil {
-			return fmt.Errorf("get node: %w", err)
-		}
-
-		node.Spec.Unschedulable = true
-		if node.Annotations == nil {
-			node.Annotations = make(map[string]string)
-		}
-		node.Annotations[temperv1alpha1.AnnotationCordonedBy] = n.Owner
-
-		return n.Client.Update(ctx, &node)
-	}); err != nil {
-		return Result{}, fmt.Errorf("cordon node %s: %w", drainNode, err)
+	drainNode := candidateNode(running, n.NodeName)
+	if err := cordonNode(ctx, n.Client, drainNode, n.Owner); err != nil {
+		return Result{}, err
 	}
 
 	running, err = runningTargetPods(ctx, n.Client, target)
@@ -115,22 +83,7 @@ func (n *NodeDrain) Inject(ctx context.Context, target Target) (Result, error) {
 }
 
 func (n *NodeDrain) Revert(ctx context.Context, _ Target) error {
-	var nodes corev1.NodeList
-	if err := n.Client.List(ctx, &nodes); err != nil {
-		return fmt.Errorf("list nodes: %w", err)
-	}
-
-	for _, node := range nodes.Items {
-		if node.Annotations[temperv1alpha1.AnnotationCordonedBy] != n.Owner {
-			continue
-		}
-		node.Spec.Unschedulable = false
-		delete(node.Annotations, temperv1alpha1.AnnotationCordonedBy)
-		if err := n.Client.Update(ctx, &node); err != nil {
-			return fmt.Errorf("uncordon node %s: %w", node.Name, err)
-		}
-	}
-	return nil
+	return uncordonOwnedNodes(ctx, n.Client, n.Owner)
 }
 
 func (n *NodeDrain) RecoveryProbe() RecoveryProbe {

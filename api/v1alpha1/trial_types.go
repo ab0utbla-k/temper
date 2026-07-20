@@ -45,14 +45,15 @@ type Target struct {
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 }
 
-// +kubebuilder:validation:Enum=pod-kill;node-drain
+// +kubebuilder:validation:Enum=pod-kill;node-drain;spot-reclaim
 
 // ScenarioType identifies the kind of fault to inject.
 type ScenarioType string
 
 const (
-	ScenarioTypePodKill   ScenarioType = "pod-kill"
-	ScenarioTypeNodeDrain ScenarioType = "node-drain"
+	ScenarioTypePodKill     ScenarioType = "pod-kill"
+	ScenarioTypeNodeDrain   ScenarioType = "node-drain"
+	ScenarioTypeSpotReclaim ScenarioType = "spot-reclaim"
 )
 
 // PodKillConfig configures the pod-kill scenario.
@@ -80,6 +81,14 @@ type NodeDrainConfig struct {
 	EvictionTimeout *metav1.Duration `json:"evictionTimeout,omitempty"`
 }
 
+// SpotReclaimConfig configures the spot-reclaim scenario.
+type SpotReclaimConfig struct {
+	// nodeName pins the reclaim to this node. Empty means the scenario picks
+	// the node running the most target pods.
+	// +optional
+	NodeName string `json:"nodeName,omitempty"`
+}
+
 // Scenario defines a single fault injection step.
 type Scenario struct {
 	// type selects which fault to inject.
@@ -98,6 +107,11 @@ type Scenario struct {
 	// "node-drain"; omitted means default behavior (drain the busiest node).
 	// +optional
 	NodeDrain *NodeDrainConfig `json:"nodeDrain,omitempty"`
+
+	// spotReclaim configures the spot-reclaim scenario. Only read when type is
+	// "spot-reclaim"; omitted means default behavior (reclaim the busiest node).
+	// +optional
+	SpotReclaim *SpotReclaimConfig `json:"spotReclaim,omitempty"`
 }
 
 // ExecutionMode controls how scenarios are run.

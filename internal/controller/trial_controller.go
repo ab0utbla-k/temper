@@ -588,6 +588,16 @@ func buildScenario(c client.Client, spec temperv1alpha1.Scenario, owner string) 
 			Owner:    owner,
 			NodeName: name,
 		}, nil
+	case temperv1alpha1.ScenarioTypeSpotReclaim:
+		name := ""
+		if spec.SpotReclaim != nil {
+			name = spec.SpotReclaim.NodeName
+		}
+		return &scenario.SpotReclaim{
+			Client:   c,
+			Owner:    owner,
+			NodeName: name,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported scenario type: %s", spec.Type)
 	}
