@@ -30,8 +30,15 @@ type QueryProbe struct {
 // Unlike the Available condition, it does not tolerate partial disruption.
 type WorkloadReadyProbe struct{}
 
+// HTTPProbe reports recovery when an HTTP GET to URL returns a 2xx status.
+// It checks that the service actually answers, not merely that the workload's
+// readiness probe claims it is ready.
+type HTTPProbe struct {
+	URL string
+}
+
 // RecoveryProbe defines how to detect that the system recovered.
-// Exactly one of Condition, Query, or WorkloadReady must be set.
+// Exactly one of Condition, Query, WorkloadReady, or HTTP must be set.
 type RecoveryProbe struct {
 	// Condition watches a Kubernetes resource condition (e.g., Deployment Available=True).
 	Condition *ConditionProbe
@@ -41,6 +48,9 @@ type RecoveryProbe struct {
 
 	// WorkloadReady waits for readyReplicas == desired with current status.
 	WorkloadReady *WorkloadReadyProbe
+
+	// HTTP waits for an HTTP GET to return 2xx (the service actually answers).
+	HTTP *HTTPProbe
 }
 
 // Result reports what a scenario's Inject did. Ignored when Inject errors.

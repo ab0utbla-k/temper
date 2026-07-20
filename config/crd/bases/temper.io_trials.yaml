@@ -69,6 +69,25 @@ spec:
                       sequential mode.
                     type: string
                 type: object
+              recovery:
+                description: |-
+                  recovery overrides how recovery is detected. When unset, each scenario's
+                  default probe is used.
+                properties:
+                  http:
+                    description: |-
+                      http probes recovery with an HTTP GET; a 2xx response means recovered.
+                      It checks that the service actually answers, not merely that the
+                      workload's readiness probe claims it is ready.
+                    properties:
+                      url:
+                        description: url is the endpoint to probe. A 2xx response
+                          means recovered.
+                        type: string
+                    required:
+                    - url
+                    type: object
+                type: object
               scenarios:
                 description: scenarios is the ordered list of fault injection steps.
                 items:
