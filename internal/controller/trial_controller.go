@@ -202,15 +202,40 @@ func (r *TrialReconciler) detectRisks(ctx context.Context, trial *temperv1alpha1
 	log := logf.FromContext(ctx)
 
 	if trial.Spec.Target.Name == nil {
+		log.Info("Skipping risk detection: target has no name",
+			"targetKind", trial.Spec.Target.Kind)
 		return
 	}
+
+	// Carry the full target reference on every line so risk detection is easy
+	// to trace and debug per Trial.
+	log = log.WithValues(
+		"targetKind", trial.Spec.Target.Kind,
+		"targetNamespace", trial.Namespace,
+		"targetName", *trial.Spec.Target.Name,
+	)
+
+	log.Info("Detecting target risks")
 
 	risks, err := risk.Detect(ctx, r.Client,
 		trial.Spec.Target.Kind, trial.Namespace, *trial.Spec.Target.Name)
 	if err != nil {
-		log.Error(err, "Failed to detect target risks", "target", *trial.Spec.Target.Name)
+		log.Error(err, "Failed to detect target risks")
 		return
 	}
+
+	if len(risks) == 0 {
+		log.Info("Detected no target risks")
+		trial.Status.Risks = risks
+		return
+	}
+
+	rules := make([]string, len(risks))
+	for i, rk := range risks {
+		rules[i] = string(rk.Rule)
+	}
+	log.Info("Detected target risks", "count", len(risks), "rules", rules)
+
 	trial.Status.Risks = risks
 }
 
