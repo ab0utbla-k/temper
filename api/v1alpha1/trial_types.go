@@ -31,9 +31,9 @@ import (
 // Target specifies which workload to inject faults into.
 // Exactly one of name or selector must be set.
 type Target struct {
-	// kind is the target resource type (e.g., Deployment).
+	// kind is the target resource type (e.g., Deployment, StatefulSet).
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=Deployment
+	// +kubebuilder:validation:Enum=Deployment;StatefulSet
 	Kind string `json:"kind"`
 
 	// name targets a specific resource by name. Mutually exclusive with selector.
@@ -273,6 +273,46 @@ type Finding struct {
 	Message string `json:"message,omitempty"`
 }
 
+// RiskRule is a bounded bucket for a resilience risk the controller detected
+// on the target workload before or during a trial. Like HaltCode, the value
+// space is fixed so risks can be grouped, counted, and displayed cleanly.
+// +kubebuilder:validation:Enum=SingleReplica;NoPodDisruptionBudget;ConcentratedPlacement;NoPodAntiAffinity;MissingHealthProbes
+type RiskRule string
+
+const (
+	// RiskSingleReplica means the target runs a single replica, so any
+	// disruption takes the whole workload down.
+	RiskSingleReplica RiskRule = "SingleReplica"
+	// RiskNoPodDisruptionBudget means no PodDisruptionBudget protects the
+	// target, so voluntary disruptions are unbounded.
+	RiskNoPodDisruptionBudget RiskRule = "NoPodDisruptionBudget"
+	// RiskConcentratedPlacement means the target's pods are packed onto too few
+	// nodes, so a single node loss disrupts a large fraction of them.
+	RiskConcentratedPlacement RiskRule = "ConcentratedPlacement"
+	// RiskNoPodAntiAffinity means the target's pod template defines neither pod
+	// anti-affinity nor topology spread constraints, so the scheduler is free
+	// to pack all replicas onto one node.
+	RiskNoPodAntiAffinity RiskRule = "NoPodAntiAffinity"
+	// RiskMissingHealthProbes means at least one container in the target lacks
+	// a readiness or liveness probe, so Kubernetes cannot tell when the app is
+	// ready or needs a restart.
+	RiskMissingHealthProbes RiskRule = "MissingHealthProbes"
+)
+
+// Risk is one resilience weakness the controller detected on the target
+// workload. It pairs a machine-readable rule token with a human sentence,
+// the same shape as Finding (reason + message) and HaltCode. The workload it
+// applies to is the Trial's target (spec.target).
+type Risk struct {
+	// rule is a machine-readable token identifying the risk kind. It is one of
+	// a fixed set (see RiskRule) so risks can be grouped and counted.
+	Rule RiskRule `json:"rule"`
+
+	// message is a human-readable explanation of the risk.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // TrialStatus defines the observed state of Trial.
 type TrialStatus struct {
 	// conditions represent the current state of the Trial resource.
@@ -321,6 +361,11 @@ type TrialStatus struct {
 	// scenarioResults records the per-scenario timeline, in execution order.
 	// +optional
 	ScenarioResults []ScenarioResult `json:"scenarioResults,omitempty"`
+
+	// risks are resilience weaknesses the controller detected on the target
+	// workload (e.g. a single replica, or no PodDisruptionBudget).
+	// +optional
+	Risks []Risk `json:"risks,omitempty"`
 
 	// haltReason explains why a safeguard stopped the trial. Only set when phase is Halted.
 	// +optional

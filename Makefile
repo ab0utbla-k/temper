@@ -171,6 +171,29 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
+# Local Kind cluster (kept separate from the e2e cluster KIND_CLUSTER).
+KIND_DEV_CLUSTER ?= temper-dev
+KIND_IMG ?= temper:demo
+KIND_CONFIG ?= kind-config.yaml
+
+.PHONY: kind-cluster
+kind-cluster: ## Create the local Kind cluster if it does not exist.
+	@command -v $(KIND) >/dev/null 2>&1 || { echo "Kind is not installed. Please install Kind manually."; exit 1; }
+	@case "$$($(KIND) get clusters)" in \
+		*"$(KIND_DEV_CLUSTER)"*) echo "Kind cluster '$(KIND_DEV_CLUSTER)' already exists. Skipping creation." ;; \
+		*) echo "Creating Kind cluster '$(KIND_DEV_CLUSTER)'..."; $(KIND) create cluster --name $(KIND_DEV_CLUSTER) --config "$(KIND_CONFIG)" ;; \
+	esac
+
+.PHONY: kind
+kind: kind-cluster ## Build the manager image, load it into the local Kind cluster, and deploy temper.
+	$(MAKE) docker-build IMG="$(KIND_IMG)"
+	$(KIND) load docker-image "$(KIND_IMG)" --name $(KIND_DEV_CLUSTER)
+	$(MAKE) install deploy IMG="$(KIND_IMG)"
+
+.PHONY: kind-clean
+kind-clean: ## Delete the local Kind cluster.
+	@$(KIND) delete cluster --name $(KIND_DEV_CLUSTER)
+
 ##@ Dependencies
 
 ## Location to install dependencies to

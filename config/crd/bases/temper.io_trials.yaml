@@ -158,9 +158,11 @@ spec:
                 description: target specifies which workload to inject faults into.
                 properties:
                   kind:
-                    description: kind is the target resource type (e.g., Deployment).
+                    description: kind is the target resource type (e.g., Deployment,
+                      StatefulSet).
                     enum:
                     - Deployment
+                    - StatefulSet
                     type: string
                   name:
                     description: name targets a specific resource by name. Mutually
@@ -347,6 +349,36 @@ spec:
                   scenario's fault.
                 format: date-time
                 type: string
+              risks:
+                description: |-
+                  risks are resilience weaknesses the controller detected on the target
+                  workload (e.g. a single replica, or no PodDisruptionBudget).
+                items:
+                  description: |-
+                    Risk is one resilience weakness the controller detected on the target
+                    workload. It pairs a machine-readable rule token with a human sentence,
+                    the same shape as Finding (reason + message) and HaltCode. The workload it
+                    applies to is the Trial's target (spec.target).
+                  properties:
+                    message:
+                      description: message is a human-readable explanation of the
+                        risk.
+                      type: string
+                    rule:
+                      description: |-
+                        rule is a machine-readable token identifying the risk kind. It is one of
+                        a fixed set (see RiskRule) so risks can be grouped and counted.
+                      enum:
+                      - SingleReplica
+                      - NoPodDisruptionBudget
+                      - ConcentratedPlacement
+                      - NoPodAntiAffinity
+                      - MissingHealthProbes
+                      type: string
+                  required:
+                  - rule
+                  type: object
+                type: array
               scenarioResults:
                 description: scenarioResults records the per-scenario timeline, in
                   execution order.

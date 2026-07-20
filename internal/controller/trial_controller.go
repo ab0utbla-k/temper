@@ -35,6 +35,7 @@ import (
 
 	temperv1alpha1 "github.com/ab0utbla-k/temper/api/v1alpha1"
 	"github.com/ab0utbla-k/temper/internal/metrics"
+	"github.com/ab0utbla-k/temper/internal/risk"
 	"github.com/ab0utbla-k/temper/internal/scenario"
 )
 
@@ -59,6 +60,7 @@ type TrialReconciler struct {
 // +kubebuilder:rbac:groups=temper.io,resources=trials/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=temper.io,resources=trials/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;update
@@ -181,11 +183,35 @@ func (r *TrialReconciler) scenarioFor(trial *temperv1alpha1.Trial, spec temperv1
 func (r *TrialReconciler) reconcilePending(ctx context.Context, trial *temperv1alpha1.Trial) (ctrl.Result, error) {
 	trial.Status.Phase = temperv1alpha1.TrialPhaseRunning
 
+	// Detect resilience risks on the target and record them before scenarios
+	// inject. Detection is advisory and best-effort: a failure is logged but
+	// never blocks or fails the Trial.
+	r.detectRisks(ctx, trial)
+
 	if err := r.Status().Update(ctx, trial); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status to Running: %w", err)
 	}
 	r.Recorder.Eventf(trial, nil, "Normal", "Started", "Started", "Trial started")
 	return ctrl.Result{RequeueAfter: time.Second}, nil
+}
+
+// detectRisks populates trial.Status.Risks with resilience weaknesses found on
+// the target workload. It is advisory and never returns an error: detection
+// problems are logged and leave Risks untouched so the Trial still runs.
+func (r *TrialReconciler) detectRisks(ctx context.Context, trial *temperv1alpha1.Trial) {
+	log := logf.FromContext(ctx)
+
+	if trial.Spec.Target.Name == nil {
+		return
+	}
+
+	risks, err := risk.Detect(ctx, r.Client,
+		trial.Spec.Target.Kind, trial.Namespace, *trial.Spec.Target.Name)
+	if err != nil {
+		log.Error(err, "Failed to detect target risks", "target", *trial.Spec.Target.Name)
+		return
+	}
+	trial.Status.Risks = risks
 }
 
 func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1alpha1.Trial) (ctrl.Result, error) {
