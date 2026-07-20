@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -251,7 +252,13 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 				return ctrl.Result{}, fmt.Errorf("build scenario for recovery probe: %w", err)
 			}
 
-			if recovered, err := r.checkRecovery(ctx, trial, s.RecoveryProbe()); err != nil {
+			// The Trial may override the scenario's default probe.
+			probe := s.RecoveryProbe()
+			if rec := trial.Spec.Recovery; rec != nil && rec.HTTP != nil {
+				probe = scenario.RecoveryProbe{HTTP: &scenario.HTTPProbe{URL: rec.HTTP.URL}}
+			}
+
+			if recovered, err := r.checkRecovery(ctx, trial, probe); err != nil {
 				return ctrl.Result{}, fmt.Errorf("check recovery: %w", err)
 			} else if recovered {
 				trial.Status.RecoveredAt = new(metav1.Now())
@@ -485,6 +492,11 @@ func (r *TrialReconciler) checkRecovery(
 	trial *temperv1alpha1.Trial,
 	probe scenario.RecoveryProbe,
 ) (bool, error) {
+	// The HTTP probe hits a URL directly; it needs no target lookup.
+	if probe.HTTP != nil {
+		return checkHTTPRecovery(ctx, probe.HTTP)
+	}
+
 	if trial.Spec.Target.Name == nil {
 		return false, nil
 	}
@@ -520,6 +532,26 @@ func (r *TrialReconciler) checkRecovery(
 	default:
 		return false, fmt.Errorf("recovery probe has no kind set")
 	}
+}
+
+// checkHTTPRecovery reports recovery when an HTTP GET to the probe URL returns
+// a 2xx status. A malformed URL is a configuration error and is returned. A
+// transport error (connection refused, DNS failure, timeout) or a non-2xx
+// status is the normal "not recovered yet" signal, not a controller error.
+func checkHTTPRecovery(ctx context.Context, probe *scenario.HTTPProbe) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probe.URL, nil)
+	if err != nil {
+		return false, fmt.Errorf("build recovery request: %w", err)
+	}
+
+	c := &http.Client{Timeout: 2 * time.Second}
+	resp, err := c.Do(req)
+	if err != nil {
+		return false, nil
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode >= 200 && resp.StatusCode < 300, nil
 }
 
 // apiFindings converts scenario findings into their API status form.

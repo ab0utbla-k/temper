@@ -120,6 +120,24 @@ type Execution struct {
 	PauseBetween *metav1.Duration `json:"pauseBetween,omitempty"`
 }
 
+// RecoverySpec overrides how the controller decides the target recovered.
+// When set, it replaces the scenario's default recovery probe. Exactly one
+// probe kind may be set.
+type RecoverySpec struct {
+	// http probes recovery with an HTTP GET; a 2xx response means recovered.
+	// It checks that the service actually answers, not merely that the
+	// workload's readiness probe claims it is ready.
+	// +optional
+	HTTP *HTTPRecoveryProbe `json:"http,omitempty"`
+}
+
+// HTTPRecoveryProbe probes recovery by issuing an HTTP GET.
+type HTTPRecoveryProbe struct {
+	// url is the endpoint to probe. A 2xx response means recovered.
+	// +kubebuilder:validation:Required
+	URL string `json:"url"`
+}
+
 // TrialSpec defines the desired state of Trial
 type TrialSpec struct {
 	// target specifies which workload to inject faults into.
@@ -133,6 +151,11 @@ type TrialSpec struct {
 	// execution controls how scenarios are run. Defaults to sequential.
 	// +optional
 	Execution *Execution `json:"execution,omitempty"`
+
+	// recovery overrides how recovery is detected. When unset, each scenario's
+	// default probe is used.
+	// +optional
+	Recovery *RecoverySpec `json:"recovery,omitempty"`
 }
 
 // HaltCode is a bounded bucket for the cause of a safeguard halt. Written to
