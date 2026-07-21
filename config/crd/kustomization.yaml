@@ -4,6 +4,7 @@
 resources:
 - bases/temper.io_trials.yaml
 - bases/temper.io_crontrials.yaml
+- bases/temper.io_trialsets.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

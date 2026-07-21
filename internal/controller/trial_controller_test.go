@@ -274,6 +274,37 @@ var _ = Describe("Trial Controller", func() {
 		}, timeout, interval).Should(Succeed())
 	})
 
+	It("should target a Deployment in a different namespace via spec.target.namespace", func() {
+		// The Trial lives in "default" but targets a Deployment in "alt". The
+		// pod-kill scenario must act on pods in "alt", the recovery probe must
+		// watch the Deployment in "alt", and revert must clean up there too.
+		// envtest only pre-creates "default"; "alt" must be created explicitly.
+		createNamespace(ctx, "alt")
+
+		dep := createDeployment(ctx, "dep-cross-ns", "alt", 3)
+		createRunningPods(ctx, dep)
+		trial := createCrossNamespaceTrial(ctx, "exp-cross-ns", "default", dep.Name, "alt", 15*time.Second)
+		key := client.ObjectKeyFromObject(trial)
+
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseRunning))
+		}, timeout, interval).Should(Succeed())
+
+		// Recovery and completion are reported against the Deployment in "alt".
+		patchDeploymentStatus(ctx, dep.Name, "alt", 3, false)
+
+		Eventually(func(g Gomega) {
+			var got temperv1alpha1.Trial
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialPhaseCompleted))
+			g.Expect(got.Status.Outcome).To(Equal(temperv1alpha1.OutcomePassed))
+			g.Expect(got.Status.Metrics).NotTo(BeNil())
+			g.Expect(got.Status.Metrics.TotalPodsKilled).To(BeNumerically(">", 0))
+		}, 25*time.Second, interval).Should(Succeed())
+	})
+
 	It("should fail when target deployment doesn't exist", func() {
 		trial := createTrial(ctx, "exp-no-target", "default", "nonexistent", 5*time.Second)
 

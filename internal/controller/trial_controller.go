@@ -129,6 +129,9 @@ func (r *TrialReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		r.Recorder.Eventf(&trial, nil, "Warning", "Halted", "Halted",
 			"Trial halted by safeguard: %s", reason)
 
+		// Namespace label is the Trial's own namespace (resource attribution),
+		// not the target's — intentional per trialset-design.md (Metric
+		// cardinality). Do not change to targetNamespace.
 		metrics.TrialsHaltedTotal.WithLabelValues(trial.Namespace, sourceLabel(&trial), code).Inc()
 
 		delete(trial.Annotations, temperv1alpha1.AnnotationHaltReason)
@@ -392,6 +395,9 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 			trial.Status.Metrics = &temperv1alpha1.TrialMetrics{}
 		}
 		recoveryTime := trial.Status.RecoveredAt.Sub(trial.Status.InjectedAt.Time)
+		// Namespace label is the Trial's own namespace (resource attribution),
+		// not the target's — intentional per trialset-design.md. Do not change
+		// to targetFromSpec(trial).Namespace.
 		metrics.RecoveryTimeSeconds.WithLabelValues(trial.Namespace, sourceLabel(trial), string(spec.Type)).Observe(recoveryTime.Seconds())
 		if prev := trial.Status.Metrics.MeanRecoveryTime; prev != nil && idx > 0 {
 			n := time.Duration(idx)
@@ -450,6 +456,9 @@ func (r *TrialReconciler) continueInjection(
 		}
 		r.Recorder.Eventf(trial, nil, "Warning", "Blocked", "Blocked",
 			"Evictions stayed blocked past the eviction timeout; see scenarioResults findings")
+		// Namespace label is the Trial's own namespace (resource attribution),
+		// not the target's — intentional per trialset-design.md. Do not change
+		// to targetFromSpec(trial).Namespace.
 		metrics.TrialsTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), "blocked").Inc()
 		metrics.TrialDurationSeconds.WithLabelValues(trial.Namespace, sourceLabel(trial)).Observe(time.Since(trial.CreationTimestamp.Time).Seconds())
 		return ctrl.Result{}, nil
@@ -574,6 +583,9 @@ func (r *TrialReconciler) recordInjectResult(
 	r.Recorder.Eventf(trial, nil, "Normal", "Injected", "Injected",
 		"Injected scenario %s (%d/%d)", spec.Type, idx+1, len(trial.Spec.Scenarios))
 
+	// Namespace label is the Trial's own namespace (resource attribution),
+	// not the target's — intentional per trialset-design.md. Do not change
+	// to targetFromSpec(trial).Namespace.
 	metrics.ScenariosExecutedTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), string(spec.Type)).Inc()
 	if podsKilled > 0 {
 		metrics.PodsKilledTotal.WithLabelValues(trial.Namespace, sourceLabel(trial)).Add(float64(podsKilled))
@@ -622,6 +634,9 @@ func (r *TrialReconciler) completeTrial(ctx context.Context, trial *temperv1alph
 	}
 	r.Recorder.Eventf(trial, nil, "Normal", "Completed", "Completed",
 		"All scenarios completed")
+	// Namespace label is the Trial's own namespace (resource attribution),
+	// not the target's — intentional per trialset-design.md. Do not change
+	// to targetFromSpec(trial).Namespace.
 	metrics.TrialsTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), "completed").Inc()
 	metrics.TrialDurationSeconds.WithLabelValues(trial.Namespace, sourceLabel(trial)).Observe(time.Since(trial.CreationTimestamp.Time).Seconds())
 	return ctrl.Result{}, nil
@@ -681,6 +696,9 @@ func (r *TrialReconciler) failTrial(ctx context.Context, trial *temperv1alpha1.T
 	if err := r.Status().Update(ctx, trial); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status to Failed: %w", err)
 	}
+	// Namespace label is the Trial's own namespace (resource attribution),
+	// not the target's — intentional per trialset-design.md. Do not change
+	// to targetFromSpec(trial).Namespace.
 	metrics.TrialsTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), "failed").Inc()
 	metrics.TrialDurationSeconds.WithLabelValues(trial.Namespace, sourceLabel(trial)).Observe(time.Since(trial.CreationTimestamp.Time).Seconds())
 	return ctrl.Result{}, nil
@@ -734,9 +752,10 @@ func (r *TrialReconciler) workloadReady(ctx context.Context, trial *temperv1alph
 		return false, nil
 	}
 
+	target := targetFromSpec(trial)
 	var dep appsv1.Deployment
 	if err := r.Get(ctx, client.ObjectKey{
-		Namespace: trial.Namespace,
+		Namespace: target.Namespace,
 		Name:      *trial.Spec.Target.Name,
 	}, &dep); err != nil {
 		return false, fmt.Errorf("get deployment: %w", err)
@@ -842,6 +861,9 @@ func targetFromSpec(trial *temperv1alpha1.Trial) scenario.Target {
 		Namespace: trial.Namespace,
 		Kind:      trial.Spec.Target.Kind,
 	}
+	if trial.Spec.Target.Namespace != nil {
+		t.Namespace = *trial.Spec.Target.Namespace
+	}
 	if trial.Spec.Target.Name != nil {
 		t.Name = *trial.Spec.Target.Name
 	}
@@ -849,7 +871,13 @@ func targetFromSpec(trial *temperv1alpha1.Trial) scenario.Target {
 }
 
 func sourceLabel(trial *temperv1alpha1.Trial) string {
+	// Attribution source for metrics: prefer the controlling resource so
+	// Trials are attributed to their owner rather than counted as adhoc.
+	// Order: CronTrial (cron-trial label) -> TrialSet (trial-set label) -> adhoc.
 	if val := trial.Labels[temperv1alpha1.LabelCronTrial]; val != "" {
+		return val
+	}
+	if val := trial.Labels[temperv1alpha1.LabelTrialSet]; val != "" {
 		return val
 	}
 	return "adhoc"

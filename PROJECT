@@ -25,4 +25,12 @@ resources:
   kind: CronTrial
   path: github.com/ab0utbla-k/temper/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: temper.io
+  kind: TrialSet
+  path: github.com/ab0utbla-k/temper/api/v1alpha1
+  version: v1alpha1
 version: "3"

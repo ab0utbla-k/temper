@@ -1,0 +1,547 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: trialsets.temper.io
+spec:
+  group: temper.io
+  names:
+    kind: TrialSet
+    listKind: TrialSetList
+    plural: trialsets
+    singular: trialset
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.discoveredDeployments
+      name: Discovered
+      type: integer
+    - jsonPath: .spec.schedule
+      name: Schedule
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: TrialSet is the Schema for the trialsets API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of TrialSet
+            properties:
+              concurrencyPolicy:
+                default: Forbid
+                description: |-
+                  concurrencyPolicy controls what happens when a new batch is due while
+                  the previous one is still active. Default Forbid (skip the new fire).
+                enum:
+                - Forbid
+                - Allow
+                - Replace
+                type: string
+              maxConcurrent:
+                default: 1
+                description: |-
+                  maxConcurrent limits how many generated Trials run simultaneously within
+                  a batch. Default 1 (most conservative — one pod-kill at a time).
+                format: int32
+                minimum: 1
+                type: integer
+              minReadyReplicas:
+                description: |-
+                  minReadyReplicas skips Deployments whose readyReplicas are below this
+                  threshold at discovery time. Nil means generate for all matches
+                  (including zero-ready Deployments, which will then fail their Trial
+                  after the existing 60s target-ready grace). Recommended value in
+                  practice: 1.
+                format: int32
+                type: integer
+              namespaces:
+                description: |-
+                  namespaces scopes Deployment discovery. Empty means the TrialSet's own
+                  namespace only. When set to explicit names or a label selector,
+                  discovery lists Deployments across those namespaces.
+                properties:
+                  labelSelector:
+                    description: |-
+                      labelSelector matches namespace labels. When set, discovery only lists
+                      Deployments in namespaces whose labels match this selector. If both
+                      names and labelSelector are set, a namespace must match both.
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  names:
+                    description: |-
+                      names is an explicit list of namespace names. When set, discovery only
+                      lists Deployments in these namespaces.
+                    items:
+                      type: string
+                    type: array
+                type: object
+              safeguards:
+                description: |-
+                  safeguards defines safety checks (same semantics as CronTrial.safeguards),
+                  evaluated per generated Trial against that Trial's target Deployment.
+                properties:
+                  alertSource:
+                    description: alertSource configures the alert backend for safeguard
+                      checks.
+                    properties:
+                      type:
+                        description: type selects the alert backend. Currently only
+                          "alertmanager" is supported.
+                        enum:
+                        - alertmanager
+                        type: string
+                      url:
+                        description: url is the base URL of the alert backend (e.g.,
+                          "http://alertmanager.monitoring.svc:9093").
+                        type: string
+                    required:
+                    - type
+                    - url
+                    type: object
+                  haltOnAlertLabels:
+                    additionalProperties:
+                      type: string
+                    description: haltOnAlertLabels are label matchers that trigger
+                      a halt when a firing alert matches all of them.
+                    type: object
+                  maxUnavailable:
+                    description: maxUnavailable is the maximum number of pods that
+                      can be unavailable during an trial.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  metricsSource:
+                    description: metricsSource configures the PromQL-compatible metrics
+                      backend for safeguard checks.
+                    properties:
+                      url:
+                        description: |-
+                          url is the base URL of the metrics backend (e.g., "http://prometheus.monitoring.svc:9090").
+                          Works with Prometheus, VictoriaMetrics, Thanos, Mimir, and Cortex.
+                        type: string
+                    required:
+                    - url
+                    type: object
+                  minReplicasAvailable:
+                    description: minReplicasAvailable is the minimum number of pods
+                      that must remain running.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  sloProtection:
+                    description: sloProtection configures SLO-based safeguard checks.
+                    properties:
+                      mode:
+                        default: static
+                        description: mode selects the evaluation strategy. Currently
+                          only "static" is supported.
+                        enum:
+                        - static
+                        type: string
+                      queries:
+                        description: queries is the list of PromQL expressions to
+                          evaluate.
+                        items:
+                          description: SLOQuery is a named PromQL expression evaluated
+                            during safeguard checks.
+                          properties:
+                            name:
+                              description: name identifies this query in logs and
+                                halt reasons.
+                              type: string
+                            query:
+                              description: query is a PromQL expression that must
+                                return a single scalar.
+                              type: string
+                          required:
+                          - name
+                          - query
+                          type: object
+                        type: array
+                      threshold:
+                        description: threshold is the value above which the trial
+                          is halted (static mode).
+                        type: string
+                    required:
+                    - mode
+                    type: object
+                type: object
+              schedule:
+                description: |-
+                  schedule, if set, repeats the batch on a cron expression (e.g.
+                  "0 2 * * 1-5"). If unset, the batch runs once on creation.
+                type: string
+              suspend:
+                default: false
+                description: |-
+                  suspend stops future batch runs when true. An in-progress batch is not
+                  interrupted — it runs to completion.
+                type: boolean
+              targetSelector:
+                description: |-
+                  targetSelector selects Deployments to generate Trials for. Matches via
+                  labels. Cross-namespace discovery is allowed: temper's manager is
+                  cluster-scoped (no --namespace flag in config/manager/manager.yaml)
+                  and the manager-role is a ClusterRole (see config/rbac/role.yaml).
+                properties:
+                  matchExpressions:
+                    description: matchExpressions is a list of label selector requirements.
+                      The requirements are ANDed.
+                    items:
+                      description: |-
+                        A label selector requirement is a selector that contains values, a key, and an operator that
+                        relates the key and values.
+                      properties:
+                        key:
+                          description: key is the label key that the selector applies
+                            to.
+                          type: string
+                        operator:
+                          description: |-
+                            operator represents a key's relationship to a set of values.
+                            Valid operators are In, NotIn, Exists and DoesNotExist.
+                          type: string
+                        values:
+                          description: |-
+                            values is an array of string values. If the operator is In or NotIn,
+                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                            the values array must be empty. This array is replaced during a strategic
+                            merge patch.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                      map is equivalent to an element of matchExpressions, whose key field is "key", the
+                      operator is "In", and the values array contains only "value". The requirements are ANDed.
+                    type: object
+                type: object
+                x-kubernetes-map-type: atomic
+              timezone:
+                default: UTC
+                description: |-
+                  timezone for the schedule (e.g. "UTC", "America/New_York"). Defaults
+                  to UTC. Ignored when schedule is unset.
+                type: string
+              trialTemplate:
+                description: |-
+                  trialTemplate is applied to each discovered Deployment. The controller
+                  stamps target.name and target.namespace onto each generated Trial from
+                  the Deployment it matched.
+                properties:
+                  execution:
+                    description: |-
+                      execution controls how scenarios run within each generated Trial.
+                      Defaults to sequential when unset.
+                    properties:
+                      mode:
+                        default: sequential
+                        description: mode determines whether scenarios run one after
+                          another or simultaneously.
+                        enum:
+                        - sequential
+                        - parallel
+                        type: string
+                      pauseBetween:
+                        description: pauseBetween is the wait time between scenarios
+                          in sequential mode.
+                        type: string
+                    type: object
+                  scenarios:
+                    description: |-
+                      scenarios is the ordered list of fault injection steps applied to each
+                      discovered Deployment.
+                    items:
+                      description: Scenario defines a single fault injection step.
+                      properties:
+                        duration:
+                          description: duration is how long this scenario runs before
+                            reverting.
+                          type: string
+                        nodeDrain:
+                          description: |-
+                            nodeDrain configures the node-drain scenario. Only read when type is
+                            "node-drain"; omitted means default behavior (drain the busiest node).
+                          properties:
+                            evictionTimeout:
+                              description: |-
+                                evictionTimeout is how long blocked evictions are retried before the
+                                trial concludes Blocked. Unset means 30s.
+                              type: string
+                            nodeName:
+                              description: |-
+                                nodeName pins the drain to this node. Empty means the scenario picks
+                                the node running the most target pods.
+                              type: string
+                          type: object
+                        podKill:
+                          description: podKill configures the pod-kill scenario. Required
+                            when type is "pod-kill".
+                          properties:
+                            count:
+                              default: 1
+                              description: count is the number of pods to kill at
+                                a time.
+                              format: int32
+                              minimum: 1
+                              type: integer
+                            interval:
+                              description: interval is the time between repeated kills.
+                                If unset, pods are killed once.
+                              type: string
+                          required:
+                          - count
+                          type: object
+                        type:
+                          description: type selects which fault to inject.
+                          enum:
+                          - pod-kill
+                          - node-drain
+                          type: string
+                      required:
+                      - duration
+                      - type
+                      type: object
+                    minItems: 1
+                    type: array
+                required:
+                - scenarios
+                type: object
+            required:
+            - targetSelector
+            - trialTemplate
+            type: object
+          status:
+            description: status defines the observed state of TrialSet
+            properties:
+              activeTrialNames:
+                description: activeTrialNames are the in-progress Trials in the current
+                  batch.
+                items:
+                  type: string
+                type: array
+              conditions:
+                description: |-
+                  conditions represent the current state of the TrialSet resource.
+                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
+
+                  Standard condition types include:
+                  - "Available": the resource is fully functional
+                  - "Progressing": the resource is being created or updated
+                  - "Degraded": the resource failed to reach or maintain its desired state
+
+                  The status of each condition is one of True, False, or Unknown.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              discoveredDeployments:
+                description: |-
+                  discoveredDeployments is the number of Deployments matched by
+                  targetSelector in the last discovery.
+                format: int32
+                type: integer
+              history:
+                description: history tracks aggregate results across all batches.
+                properties:
+                  haltedBatches:
+                    description: |-
+                      haltedBatches is the number of batches in which at least one Trial was
+                      halted by a safeguard.
+                    format: int32
+                    type: integer
+                  lastHaltReason:
+                    description: lastHaltReason describes why the most recent halt
+                      occurred.
+                    type: string
+                  successfulBatches:
+                    description: successfulBatches is the number of batches whose
+                      Trials all Completed.
+                    format: int32
+                    type: integer
+                  totalBatches:
+                    description: totalBatches is the number of batches fired (including
+                      the current one).
+                    format: int32
+                    type: integer
+                type: object
+              lastDiscoveryTime:
+                description: lastDiscoveryTime is when Deployments were last listed.
+                format: date-time
+                type: string
+              lastScheduleTime:
+                description: lastScheduleTime is when the last batch was fired.
+                format: date-time
+                type: string
+              phase:
+                description: phase is the current lifecycle stage of the TrialSet.
+                enum:
+                - Idle
+                - Running
+                - Paused
+                - Completed
+                - Halted
+                - Failed
+                type: string
+              trialsCompleted:
+                description: |-
+                  trialsCompleted is the number of Trials that reached Completed in the
+                  current batch.
+                format: int32
+                type: integer
+              trialsCreated:
+                description: trialsCreated is the number of Trials created in the
+                  current batch.
+                format: int32
+                type: integer
+              trialsFailed:
+                description: |-
+                  trialsFailed is the number of Trials that reached Failed in the
+                  current batch.
+                format: int32
+                type: integer
+              trialsHalted:
+                description: |-
+                  trialsHalted is the number of Trials halted by safeguards in the
+                  current batch.
+                format: int32
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

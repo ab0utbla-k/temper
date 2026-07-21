@@ -32,3 +32,4 @@ go.work
 PLAN.md
 CLAUDE.local.md
 .agents/
+.kimchi/

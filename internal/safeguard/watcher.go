@@ -69,26 +69,71 @@ func (w *Watcher) checkAll(ctx context.Context) {
 
 		w.checkCronTrial(ctx, cronTrial)
 	}
+
+	// TrialSet-generated Trials carry the temper.io/trial-set label. We list ALL
+	// Trials (no server-side label filter) and filter in-memory by label
+	// presence. controller-runtime's client.MatchingLabels matches label
+	// *equality* (key=value), and an empty value matches only labels whose
+	// value is literally "", not "the key exists" — there is no built-in
+	// label-exists selector in the client API. So a server-side
+	// MatchingLabels{LabelTrialSet:""} would MISS real TrialSet Trials (whose
+	// label value is the TrialSet name, e.g. "ts-halt"). The in-memory
+	// `_, ok := trial.Labels[LabelTrialSet]` check is the correct expression
+	// of "label exists". This is a full scan, acceptable because Trial count
+	// is bounded by TrialSet activity and the watcher ticks every 5s.
+	//
+	// For each matched Running-phase Trial, safeguardsForTrial looks up the
+	// owning TrialSet (by controller owner ref) and returns its Safeguards.
+	// Empty safeguards means skip (no runtime checks). checkTrial is then the
+	// shared halt path shared with the CronTrial branch above.
+	var trialList temperv1alpha1.TrialList
+	if err := w.client.List(ctx, &trialList); err != nil {
+		log.Error(err, "Failed to list Trials for TrialSet safeguard checks")
+		return
+	}
+	for i := range trialList.Items {
+		trial := &trialList.Items[i]
+		if _, ok := trial.Labels[temperv1alpha1.LabelTrialSet]; !ok {
+			continue
+		}
+		if trial.Status.Phase != temperv1alpha1.TrialPhaseRunning {
+			continue
+		}
+		sg := w.safeguardsForTrial(ctx, trial)
+		if sg == nil {
+			continue
+		}
+		w.checkTrial(ctx, trial, sg)
+	}
+}
+
+// safeguardsForTrial looks up the owning TrialSet and returns its Safeguards.
+// Returns nil if the Trial has no TrialSet controller owner, the TrialSet
+// cannot be found, or the TrialSet has no safeguards configured (skip).
+func (w *Watcher) safeguardsForTrial(ctx context.Context, trial *temperv1alpha1.Trial) *temperv1alpha1.Safeguards {
+	log := logf.FromContext(ctx)
+	for _, ref := range trial.OwnerReferences {
+		if ref.Kind != "TrialSet" || ref.Controller == nil || !*ref.Controller {
+			continue
+		}
+		var ts temperv1alpha1.TrialSet
+		if err := w.client.Get(ctx, client.ObjectKey{Namespace: trial.Namespace, Name: ref.Name}, &ts); err != nil {
+			log.Error(err, "Failed to get owning TrialSet for Trial",
+				"trial", trial.Name, "trialSet", ref.Name)
+			return nil
+		}
+		return ts.Spec.Safeguards
+	}
+	return nil
 }
 
 func (w *Watcher) checkCronTrial(ctx context.Context, cronTrial *temperv1alpha1.CronTrial) {
 	log := logf.FromContext(ctx)
 	sg := cronTrial.Spec.Safeguards
-
 	if sg == nil {
 		return
 	}
-
-	haltCode, haltDetail, checkErr := w.checkAlerts(ctx, cronTrial.Namespace, sg)
-	if haltCode == "" && checkErr == nil {
-		haltCode, haltDetail, checkErr = w.checkSLO(ctx, cronTrial.Namespace, sg)
-	}
-
-	key := fmt.Sprintf("%s/%s", cronTrial.Namespace, cronTrial.Name)
-	needsReplicaCheck := sg.MinReplicasAvailable != nil || sg.MaxUnavailable != nil
-
-	if haltCode == "" && checkErr == nil && !needsReplicaCheck {
-		delete(w.consecutiveFailures, key)
+	if cronTrial.Status.ActiveTrialName == nil {
 		return
 	}
 
@@ -101,15 +146,56 @@ func (w *Watcher) checkCronTrial(ctx context.Context, cronTrial *temperv1alpha1.
 		return
 	}
 
+	w.checkTrial(ctx, &trial, sg)
+}
+
+// checkTrial evaluates all configured safeguards for a single running Trial.
+// It is the shared implementation behind both the CronTrial path (via
+// checkCronTrial) and the TrialSet path (via checkAll listing
+// LabelTrialSet-labeled Trials). If a safeguard trips (haltCode != "") or
+// the checks are unreachable (checkErr != nil), the Trial is halted via
+// annotations (haltTrial) or tracked in consecutiveFailures until the
+// threshold is reached. The key is derived from the Trial's own namespace
+// and name so each Trial's failure streak is tracked independently.
+func (w *Watcher) checkTrial(ctx context.Context, trial *temperv1alpha1.Trial, sg *temperv1alpha1.Safeguards) {
+	log := logf.FromContext(ctx)
+	if sg == nil {
+		return
+	}
+
+	haltCode, haltDetail, checkErr := w.checkAlerts(ctx, trial.Namespace, sg)
+	if haltCode == "" && checkErr == nil {
+		haltCode, haltDetail, checkErr = w.checkSLO(ctx, trial.Namespace, sg)
+	}
+
+	key := fmt.Sprintf("%s/%s", trial.Namespace, trial.Name)
+	needsReplicaCheck := sg.MinReplicasAvailable != nil || sg.MaxUnavailable != nil
+
+	if haltCode == "" && checkErr == nil && !needsReplicaCheck {
+		delete(w.consecutiveFailures, key)
+		return
+	}
+
 	if haltCode == "" && needsReplicaCheck {
 		if trial.Spec.Target.Name == nil {
-			log.Info("Skipping replica check: no target name", "cronTrial", key)
+			log.Info("Skipping replica check: no target name", "trial", key)
 		} else {
-			metrics.SafeguardChecksTotal.WithLabelValues(cronTrial.Namespace, metrics.SafeguardTypeReplicas).Inc()
+			// A Trial may target a Deployment in a different namespace than
+			// the Trial/CronTrial that owns it (e.g. TrialSet-generated
+			// Trials). Fall back to the Trial's own namespace for the legacy
+			// same-namespace path.
+			targetNamespace := trial.Namespace
+			if trial.Spec.Target.Namespace != nil {
+				targetNamespace = *trial.Spec.Target.Namespace
+			}
+
+			// Namespace label is the Trial's own namespace (resource
+			// attribution), not the target's — intentional per trialset-design.md.
+			metrics.SafeguardChecksTotal.WithLabelValues(trial.Namespace, metrics.SafeguardTypeReplicas).Inc()
 
 			var dep appsv1.Deployment
 			if err := w.client.Get(ctx, client.ObjectKey{
-				Namespace: cronTrial.Namespace,
+				Namespace: targetNamespace,
 				Name:      *trial.Spec.Target.Name,
 			}, &dep); err != nil {
 				checkErr = err
@@ -127,7 +213,7 @@ func (w *Watcher) checkCronTrial(ctx context.Context, cronTrial *temperv1alpha1.
 
 	switch {
 	case haltCode != "":
-		if err := w.haltTrial(ctx, &trial, haltCode, haltDetail); err != nil {
+		if err := w.haltTrial(ctx, trial, haltCode, haltDetail); err != nil {
 			log.Error(err, "Failed to annotate trial for halt",
 				"trial", trial.Name, "code", haltCode, "reason", haltDetail)
 			return
@@ -135,7 +221,7 @@ func (w *Watcher) checkCronTrial(ctx context.Context, cronTrial *temperv1alpha1.
 
 		log.Info(
 			"Halting trial",
-			"trial", trial.Name, "cronTrial", key, "code", haltCode, "reason", haltDetail)
+			"trial", trial.Name, "key", key, "code", haltCode, "reason", haltDetail)
 
 		delete(w.consecutiveFailures, key)
 	case checkErr != nil:
@@ -143,7 +229,7 @@ func (w *Watcher) checkCronTrial(ctx context.Context, cronTrial *temperv1alpha1.
 
 		log.Info(
 			"Safeguard check failed",
-			"cronTrial", key,
+			"key", key,
 			"consecutive", w.consecutiveFailures[key],
 			"threshold", w.failureThreshold,
 			"error", checkErr,
@@ -153,13 +239,13 @@ func (w *Watcher) checkCronTrial(ctx context.Context, cronTrial *temperv1alpha1.
 			haltCode = temperv1alpha1.HaltCodeUnreachable
 			haltDetail = fmt.Sprintf("Safeguard checks unreachable for %ds: %v", w.failureThreshold*5, checkErr)
 
-			if err := w.haltTrial(ctx, &trial, haltCode, haltDetail); err != nil {
+			if err := w.haltTrial(ctx, trial, haltCode, haltDetail); err != nil {
 				log.Error(err, "Failed to annotate trial for halt",
 					"trial", trial.Name, "code", haltCode, "reason", haltDetail)
 				return
 			}
 			log.Info("Halting trial",
-				"trial", trial.Name, "cronTrial", key, "code", haltCode, "reason", haltDetail)
+				"trial", trial.Name, "key", key, "code", haltCode, "reason", haltDetail)
 			delete(w.consecutiveFailures, key)
 		}
 	default:
@@ -177,6 +263,9 @@ func (w *Watcher) checkAlerts(ctx context.Context, namespace string, sg *temperv
 		return temperv1alpha1.HaltCodeConfigError, fmt.Sprintf("Invalid alert source config: %v", err), nil
 	}
 
+	// Namespace label is the Trial's own namespace (resource attribution),
+	// not the target's — intentional per trialset-design.md. For
+	// CronTrial-generated Trials this equals the CronTrial's namespace.
 	metrics.SafeguardChecksTotal.WithLabelValues(namespace, metrics.SafeguardTypeAlerts).Inc()
 
 	return CheckAlertsFiring(ctx, sg.HaltOnAlertLabels, checker)
@@ -192,6 +281,9 @@ func (w *Watcher) checkSLO(ctx context.Context, namespace string, sg *temperv1al
 		return temperv1alpha1.HaltCodeConfigError, fmt.Sprintf("Invalid metrics source config: %v", err), nil
 	}
 
+	// Namespace label is the Trial's own namespace (resource attribution),
+	// not the target's — intentional per trialset-design.md. For
+	// CronTrial-generated Trials this equals the CronTrial's namespace.
 	metrics.SafeguardChecksTotal.WithLabelValues(namespace, metrics.SafeguardTypeSLO).Inc()
 
 	return CheckSLOBreach(ctx, sg.SLOProtection, querier)
@@ -208,6 +300,9 @@ func (w *Watcher) haltTrial(ctx context.Context, trial *temperv1alpha1.Trial, co
 		return err
 	}
 
+	// Namespace label is the Trial's own namespace (resource attribution),
+	// not the target's — intentional per trialset-design.md. Do not change
+	// to *trial.Spec.Target.Namespace.
 	metrics.SafeguardHaltsTotal.WithLabelValues(trial.Namespace, string(code)).Inc()
 	return nil
 }

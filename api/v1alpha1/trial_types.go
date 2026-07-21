@@ -43,6 +43,22 @@ type Target struct {
 	// selector targets resources by label. Mutually exclusive with name.
 	// +optional
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
+
+	// namespace overrides the Trial's own namespace for target lookup.
+	// Empty means the Trial's namespace. Used by TrialSet to target
+	// Deployments in other namespaces.
+	//
+	// Security note: this field lets a Trial in namespace A mutate workloads
+	// in namespace B. It requires the controller's RBAC to span both
+	// namespaces — temper's manager-role is a ClusterRole (see
+	// config/rbac/role.yaml) and the manager is cluster-scoped (no
+	// --namespace flag, see config/manager/manager.yaml), so this works by
+	// default. In multi-tenant clusters, restrict who can create Trials
+	// (and TrialSets) via Kubernetes RBAC: any user who can create a Trial
+	// with target.namespace set can fault-inject into that namespace's
+	// workloads. See .kimchi/docs/trialset-design.md (Risks).
+	// +optional
+	Namespace *string `json:"namespace,omitempty"`
 }
 
 // +kubebuilder:validation:Enum=pod-kill;node-drain;spot-reclaim
@@ -199,6 +215,15 @@ const (
 	// Trial it creates. Metrics use its value as a bounded source
 	// identifier (the CronTrial name, or "adhoc" when absent).
 	LabelCronTrial = "temper.io/cron-trial"
+
+	// LabelTrialSet is the label set by the TrialSet controller on every
+	// Trial it generates from an inline template. Metrics use its value as
+	// a bounded source identifier (the TrialSet name, falling back to the
+	// CronTrial name for cron-owned Trials or "adhoc" when neither label is
+	// present). The TrialSet controller also watches Trials carrying this
+	// label to drive per-batch status (created/completed/failed/halted
+	// counts) and to enforce maxConcurrent throttling across namespaces.
+	LabelTrialSet = "temper.io/trial-set"
 
 	// AnnotationHaltCode is the bounded halt bucket set alongside AnnotationHaltReason.
 	// Used for metric labels; the value is one of the HaltCode constants.

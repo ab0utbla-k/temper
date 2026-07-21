@@ -210,6 +210,20 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "CronTrial")
 		os.Exit(1)
 	}
+	if err := (&controller.TrialSetReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("trialset"),
+		NewAlertChecker: func(url string) (safeguard.AlertChecker, error) {
+			return safeguard.NewAlertmanagerChecker(url)
+		},
+		NewMetricsQuerier: func(url string) (safeguard.MetricsQuerier, error) {
+			return safeguard.NewPrometheusQuerier(url)
+		},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "TrialSet")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.Add(safeguard.NewWatcher(mgr.GetClient(), mgr.GetEventRecorder("safeguard-watcher"))); err != nil {

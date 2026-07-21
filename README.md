@@ -12,6 +12,7 @@ Current state:
 
 - `Trial` CRD for manual test runs
 - `CronTrial` CRD for scheduled tests
+- `TrialSet` CRD for discovering Deployments by label selector and generating one owned Trial per match
 - `pod-kill` scenario
 - basic `node-drain` scenario
 - safeguard checks for replica availability, Alertmanager alerts, and static PromQL thresholds
@@ -71,6 +72,58 @@ spec:
     minReplicasAvailable: 2
     maxUnavailable: 1
 ```
+
+### TrialSet
+
+A `TrialSet` discovers Deployments by label selector (optionally across
+namespaces) and generates one owned Trial per match from a shared inline
+template. Each generated Trial carries a `temper.io/trial-set` label (for
+metrics attribution) and a `spec.target.namespace` pointing at the Deployment's
+namespace, so a TrialSet in one namespace can target workloads in others.
+
+`maxConcurrent` throttles how many Trials run at once within a batch;
+`minReadyReplicas` filters out Deployments that are not ready at discovery
+time; `suspend` pauses future batches; `concurrencyPolicy: Forbid` skips a
+fire when a batch is already running. With no `schedule`, the batch is a
+one-shot that fires once on creation; with a cron expression it repeats.
+
+```yaml
+apiVersion: temper.io/v1alpha1
+kind: TrialSet
+metadata:
+  name: pod-kill-all-payments
+spec:
+  # targetSelector picks Deployments to generate Trials for by label.
+  targetSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: payments
+  # namespaces scopes discovery across namespaces. Unset means the TrialSet's
+  # own namespace only. Generated Trials carry spec.target.namespace pointing
+  # at each matching Deployment's namespace (cross-namespace targeting).
+  namespaces:
+    names:
+      - payments
+      - payments-canary
+  # trialTemplate is applied to each discovered Deployment; the controller
+  # stamps target.name and target.namespace onto each generated Trial.
+  trialTemplate:
+    scenarios:
+      - type: pod-kill
+        duration: 30s
+        podKill:
+          count: 1
+  # schedule omitted -> one-shot batch that fires once on creation.
+  maxConcurrent: 1
+  minReadyReplicas: 1
+  safeguards:
+    minReplicasAvailable: 2
+    maxUnavailable: 1
+```
+
+The TrialSet controller, the safeguard watcher (which halts TrialSet-generated
+Trials that breach a safeguard during a run), and the cross-namespace trust
+boundary are documented in the design doc at
+[.kimchi/docs/trialset-design.md](.kimchi/docs/trialset-design.md).
 
 ## Scenarios
 
@@ -157,12 +210,13 @@ make build-installer IMG=<registry>/temper:<tag>
 ## Repository layout
 
 ```text
-api/v1alpha1/              CRD types
-internal/controller/       Trial and CronTrial controllers
+api/v1alpha1/              CRD types (Trial, CronTrial, TrialSet)
+internal/controller/       Trial, CronTrial, and TrialSet controllers
 internal/scenario/         scenario implementations
 internal/safeguard/        safeguard checks and watcher
 internal/metrics/          Prometheus metrics
 config/                    CRDs, RBAC, manager manifests, samples
+config/samples/v1alpha1_trialset.yaml   TrialSet sample CR
 test/e2e/                  kind-based e2e tests
 ```
 

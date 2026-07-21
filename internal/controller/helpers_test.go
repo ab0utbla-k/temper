@@ -201,6 +201,14 @@ func createNode(ctx context.Context, name string) {
 	Expect(k8sClient.Create(ctx, node)).To(Succeed())
 }
 
+// createNamespace creates a Namespace. envtest only pre-creates "default" and
+// kube-system; any other namespace used as a Trial target or TrialSet source
+// must be created explicitly before namespaced resources go into it.
+func createNamespace(ctx context.Context, name string) {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+}
+
 // patchDeploymentStatus reports readyReplicas in the Deployment status (envtest
 // has no deployment controller to do it). stale=true marks the status as
 // describing an older spec generation — the WorkloadReady probe must ignore
@@ -290,6 +298,41 @@ func createSpotReclaimTrial(
 			Scenarios: []temperv1alpha1.Scenario{
 				{
 					Type:     temperv1alpha1.ScenarioTypeSpotReclaim,
+					Duration: metav1.Duration{Duration: duration},
+				},
+			},
+		},
+	}
+
+	Expect(k8sClient.Create(ctx, trial)).To(Succeed())
+
+	return trial
+}
+
+// createCrossNamespaceTrial creates a Trial in `namespace` that targets a
+// Deployment in `targetNamespace`. A Trial with spec.target.namespace set
+// must act on the target's namespace (pods killed, Deployment probed for
+// recovery, scenario reverted there) while living in its own namespace for
+// GC and metric attribution. See trialset-design.md, Chunk 2.
+func createCrossNamespaceTrial(
+	ctx context.Context,
+	name, namespace, targetDeployment, targetNamespace string,
+	duration time.Duration,
+) *temperv1alpha1.Trial {
+	trial := &temperv1alpha1.Trial{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: temperv1alpha1.TrialSpec{
+			Target: temperv1alpha1.Target{
+				Kind:      "Deployment",
+				Name:      new(targetDeployment),
+				Namespace: new(targetNamespace),
+			},
+			Scenarios: []temperv1alpha1.Scenario{
+				{
+					Type:     temperv1alpha1.ScenarioTypePodKill,
 					Duration: metav1.Duration{Duration: duration},
 				},
 			},
