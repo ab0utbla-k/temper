@@ -36,7 +36,7 @@ import (
 // scenario (long enough that generated Trials stay Running through the test
 // window). maxConcurrent, minReadyReplicas, suspend and safeguards are
 // caller-tunable via mutate.
-func makeTrialSet(name, namespace, appLabel string, mutate ...func(*temperv1alpha1.TrialSet)) *temperv1alpha1.TrialSet {
+func makeTrialSet(name, namespace, appLabel string, mutate ...func(*temperv1alpha1.TrialSet)) *temperv1alpha1.TrialSet { //nolint:unparam // namespace is always "default" in the test suite
 	one := int32(1)
 	ts := &temperv1alpha1.TrialSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -567,7 +567,7 @@ func patchDeploymentAvailable(ctx context.Context, name, namespace string, avail
 // template labels all carry app=<appValue>, so it matches a targetSelector
 // keyed on app. Used instead of createDeployment when the Deployment must be
 // discoverable by a TrialSet's targetSelector.
-func createLabeledDeployment(ctx context.Context, name, namespace string, replicas int, appValue string) *appsv1.Deployment {
+func createLabeledDeployment(ctx context.Context, name, namespace string, replicas int, appValue string) *appsv1.Deployment { //nolint:unparam // namespace is always "default" in the test suite
 	labels := map[string]string{"app": appValue}
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{

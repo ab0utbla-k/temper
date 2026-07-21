@@ -38,6 +38,10 @@ linters:
     modernize:
       disable:
         - omitzero
+        # newexpr flags ptr(x) as "can be simplified to new(x)" but on Go 1.26
+        # new(value) does not compile (new takes a type, not a value). The
+        # linter's suggestion is wrong for pointer-to-value helpers.
+        - newexpr
   exclusions:
     generated: lax
     rules:
