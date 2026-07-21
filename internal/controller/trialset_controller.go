@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -179,11 +180,16 @@ func (r *TrialSetReconciler) reconcileIdle(ctx context.Context, trialSet *temper
 // counts include every owned Trial, so completion is never reached while a
 // Trial is still running.
 func (r *TrialSetReconciler) reconcileRunning(ctx context.Context, trialSet *temperv1alpha1.TrialSet) (ctrl.Result, error) {
-	// 1. List owned Trials and categorize.
+	// 1. List the current batch's Trials and categorize. Filtering by the
+	// batch label matters: earlier batches' Trials remain in the cluster as
+	// history and must not count as coverage for this batch.
 	var trialList temperv1alpha1.TrialList
 	if err := r.List(ctx, &trialList,
 		client.InNamespace(trialSet.Namespace),
-		client.MatchingLabels{temperv1alpha1.LabelTrialSet: trialSet.Name},
+		client.MatchingLabels{
+			temperv1alpha1.LabelTrialSet: trialSet.Name,
+			temperv1alpha1.LabelBatch:    batchLabel(trialSet),
+		},
 	); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list owned trials: %w", err)
 	}
@@ -403,19 +409,24 @@ func (r *TrialSetReconciler) checkSafeguards(ctx context.Context, trialSet *temp
 
 // createTrialFor stamps a Trial from the inline template pointed at dep. The
 // Trial lives in the TrialSet's namespace (owner ref + GC) and carries the
-// temper.io/trial-set label (metrics attribution + watcher scope). Name is
-// <trialset>-<deployment>-<unix>.
+// temper.io/trial-set and temper.io/batch labels (metrics attribution,
+// watcher scope, per-batch coverage). The name <trialset>-b<batch>-<deployment>
+// is deterministic within a batch, so a re-create under a stale cache fails
+// with AlreadyExists instead of injecting the same Deployment twice.
 func (r *TrialSetReconciler) createTrialFor(ctx context.Context, trialSet *temperv1alpha1.TrialSet, dep *appsv1.Deployment) error {
 	tmpl := trialSet.Spec.TrialTemplate.DeepCopy()
 
 	depName := dep.Name
-	trialName := fmt.Sprintf("%s-%s-%d", trialSet.Name, dep.Name, time.Now().Unix())
+	trialName := fmt.Sprintf("%s-b%s-%s", trialSet.Name, batchLabel(trialSet), dep.Name)
 
 	trial := &temperv1alpha1.Trial{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: trialSet.Namespace,
 			Name:      trialName,
-			Labels:    map[string]string{temperv1alpha1.LabelTrialSet: trialSet.Name},
+			Labels: map[string]string{
+				temperv1alpha1.LabelTrialSet: trialSet.Name,
+				temperv1alpha1.LabelBatch:    batchLabel(trialSet),
+			},
 		},
 		Spec: temperv1alpha1.TrialSpec{
 			Target: temperv1alpha1.Target{
@@ -432,6 +443,12 @@ func (r *TrialSetReconciler) createTrialFor(ctx context.Context, trialSet *tempe
 	}
 
 	if err := r.Create(ctx, trial); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			// The Trial exists but the cache has not caught up yet — the next
+			// reconcile will observe it. Not an error, and crucially not a
+			// second injection.
+			return nil
+		}
 		return fmt.Errorf("create trial: %w", err)
 	}
 	r.Recorder.Eventf(trialSet, trial, "Normal", "TrialCreated", "TrialCreated",
@@ -448,4 +465,12 @@ func (r *TrialSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&temperv1alpha1.Trial{}).
 		Named("trialset").
 		Complete(r)
+}
+
+// batchLabel is the temper.io/batch value for the current batch:
+// history.totalBatches as a string. fireBatch increments the counter before
+// the batch starts running, so the value is 1-based and stable for the whole
+// batch.
+func batchLabel(trialSet *temperv1alpha1.TrialSet) string {
+	return strconv.FormatInt(int64(trialSet.Status.History.TotalBatches), 10)
 }

@@ -373,6 +373,52 @@ var _ = Describe("TrialSet Controller", func() {
 		})
 	})
 
+	Context("batch identity across scheduled fires", func() {
+		It("should generate a new Trial in the second batch instead of reusing the first batch's", func() {
+			ready := createLabeledDeployment(ctx, "pay-batch2", "default", 3, "ts12")
+			patchDeploymentStatus(ctx, ready.Name, ready.Namespace, 3, false)
+
+			oneMin := "* * * * *"
+			trialSet := makeTrialSet("ts-batch-identity", "default", "ts12", func(ts *temperv1alpha1.TrialSet) {
+				ts.Spec.Schedule = &oneMin
+			})
+			key := types.NamespacedName{Namespace: trialSet.Namespace, Name: trialSet.Name}
+			Expect(k8sClient.Create(ctx, trialSet)).To(Succeed())
+			backdateLastScheduleTime(key)
+
+			// Batch 1 fires and creates one Trial.
+			var firstTrialKey types.NamespacedName
+			Eventually(func(g Gomega) {
+				got := listOwnedTrials(trialSet.Name, trialSet.Namespace)
+				g.Expect(got).To(HaveLen(1))
+				firstTrialKey = types.NamespacedName{Namespace: got[0].Namespace, Name: got[0].Name}
+			}, timeout, interval).Should(Succeed())
+
+			// Finish batch 1: drive its Trial to Completed and wait for the
+			// TrialSet to close the batch.
+			patchTrialPhase(firstTrialKey, temperv1alpha1.TrialPhaseCompleted)
+			Eventually(func(g Gomega) {
+				var got temperv1alpha1.TrialSet
+				g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+				g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialSetPhaseCompleted))
+				g.Expect(got.Status.History.TotalBatches).To(Equal(int32(1)))
+			}, timeout, interval).Should(Succeed())
+
+			// Make the second fire due. Batch 1's completed Trial still exists
+			// in the cluster — batch 2 must create a NEW Trial for the same
+			// Deployment rather than treating the old one as covering it.
+			backdateLastScheduleTime(key)
+
+			Eventually(func(g Gomega) {
+				var got temperv1alpha1.TrialSet
+				g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+				g.Expect(got.Status.History.TotalBatches).To(Equal(int32(2)))
+				g.Expect(listOwnedTrials(trialSet.Name, trialSet.Namespace)).To(HaveLen(2),
+					"second batch must generate its own Trial; the first batch's Trial must not satisfy it")
+			}, timeout, interval).Should(Succeed())
+		})
+	})
+
 	Context("per-match safeguard skip", func() {
 		It("should skip an unsafe Deployment without halting the batch", func() {
 			// Two matching Deployments. The second has availableReplicas
