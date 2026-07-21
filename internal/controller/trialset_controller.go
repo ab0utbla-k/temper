@@ -19,11 +19,14 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"time"
 
 	"github.com/robfig/cron/v3"
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -171,8 +174,9 @@ func (r *TrialSetReconciler) reconcileIdle(ctx context.Context, trialSet *temper
 // reconcileRunning drives an in-progress batch: it lists owned Trials,
 // categorizes them by terminal phase, creates new Trials for uncovered matches
 // up to maxConcurrent, and completes the batch when every match is covered and
-// no Trial is active. Safeguard-unsafe Deployments are skipped (covered
-// without a Trial) — they do not halt the batch (per-Deployment semantics).
+// no Trial is active. Safeguard-unsafe Deployments are skipped for the rest of
+// the batch (recorded in status.skippedDeployments, event fired once) — they
+// do not halt the batch (per-Deployment semantics).
 //
 // Discovery re-lists Deployments on each reconcile (continuous discovery
 // rather than a snapshot at fire time). This is idempotent: a Deployment that
@@ -229,7 +233,17 @@ func (r *TrialSetReconciler) reconcileRunning(ctx context.Context, trialSet *tem
 		return ctrl.Result{}, err
 	}
 
-	// 3. Create Trials for uncovered matches up to maxConcurrent.
+	// 3. Create Trials for uncovered matches up to maxConcurrent. Deployments
+	// already skipped by a safeguard in this batch stay skipped — same
+	// "skip this run" semantics as the CronTrial pre-flight, and the
+	// SafeguardSkipped event fires once per Deployment per batch instead of
+	// on every reconcile pass.
+	skipped := make(map[string]bool, len(trialSet.Status.SkippedDeployments))
+	for _, name := range trialSet.Status.SkippedDeployments {
+		skipped[name] = true
+		hasTrial[name] = true
+	}
+
 	maxConcurrent := max(trialSet.Spec.MaxConcurrent, 1)
 	slots := maxConcurrent - active
 	created := 0
@@ -249,7 +263,7 @@ func (r *TrialSetReconciler) reconcileRunning(ctx context.Context, trialSet *tem
 		if !safe {
 			r.Recorder.Eventf(trialSet, nil, "Warning", "SafeguardSkipped", "SafeguardSkipped",
 				"Skipping deployment %s: %s", dep.Name, reason)
-			// Mark covered so we do not retry the safeguard each reconcile.
+			skipped[dep.Name] = true
 			hasTrial[dep.Name] = true
 			continue
 		}
@@ -261,21 +275,31 @@ func (r *TrialSetReconciler) reconcileRunning(ctx context.Context, trialSet *tem
 		created++
 	}
 
-	// 4. Update status from observed state.
-	now := metav1.Now()
+	// 4. Update status from observed state — but only write when something
+	// changed. This reconcile runs every few seconds while a batch is active,
+	// and a status write triggers another reconcile of this same object, so
+	// unconditional writes would loop the controller against the apiserver
+	// for the whole batch. Slices are sorted so the comparison cannot flap on
+	// list ordering.
+	prev := trialSet.Status.DeepCopy()
+	slices.Sort(activeNames)
 	trialSet.Status.DiscoveredDeployments = int32(len(matches))
 	trialSet.Status.TrialsCreated = int32(len(trialList.Items)) + int32(created)
 	trialSet.Status.TrialsCompleted = completed
 	trialSet.Status.TrialsFailed = failed
 	trialSet.Status.TrialsHalted = halted
 	trialSet.Status.ActiveTrialNames = activeNames
-	trialSet.Status.LastDiscoveryTime = &now
+	trialSet.Status.SkippedDeployments = slices.Sorted(maps.Keys(skipped))
 	if halted > 0 {
 		trialSet.Status.History.LastHaltReason = lastHaltReason
 	}
 
-	if err := r.Status().Update(ctx, trialSet); err != nil {
-		return ctrl.Result{}, fmt.Errorf("update TrialSet status: %w", err)
+	if !equality.Semantic.DeepEqual(prev, &trialSet.Status) {
+		now := metav1.Now()
+		trialSet.Status.LastDiscoveryTime = &now
+		if err := r.Status().Update(ctx, trialSet); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update TrialSet status: %w", err)
+		}
 	}
 
 	// 5. If we just created Trials, their Pending phase is not yet observed —
@@ -319,6 +343,7 @@ func (r *TrialSetReconciler) fireBatch(ctx context.Context, trialSet *temperv1al
 	trialSet.Status.TrialsFailed = 0
 	trialSet.Status.TrialsHalted = 0
 	trialSet.Status.ActiveTrialNames = nil
+	trialSet.Status.SkippedDeployments = nil
 	trialSet.Status.History.TotalBatches++
 
 	if err := r.Status().Update(ctx, trialSet); err != nil {

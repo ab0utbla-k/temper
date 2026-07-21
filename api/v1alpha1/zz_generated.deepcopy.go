@@ -748,6 +748,11 @@ func (in *TrialSetStatus) DeepCopyInto(out *TrialSetStatus) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.SkippedDeployments != nil {
+		in, out := &in.SkippedDeployments, &out.SkippedDeployments
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.LastScheduleTime != nil {
 		in, out := &in.LastScheduleTime, &out.LastScheduleTime
 		*out = (*in).DeepCopy()

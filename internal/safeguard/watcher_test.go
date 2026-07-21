@@ -48,10 +48,6 @@ func (f *fakeMetricsQuerier) RangeQuery(_ context.Context, _ string, _, _ time.T
 	return nil, f.err
 }
 
-// ptr returns a pointer to v. Used for the pointer-valued fields in test
-// fixtures (OwnerReference.Controller, Target.Name, Target.Namespace).
-func ptr[T any](v T) *T { return &v }
-
 // newScheme registers temper's types alongside the core Kubernetes types the
 // fake client needs to serialize objects (Pod, Deployment, etc.).
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -106,14 +102,14 @@ func makeTrialSetOwnedTrial(ts *temperv1alpha1.TrialSet, name string) *temperv1a
 					Kind:       "TrialSet",
 					Name:       ts.Name,
 					UID:        ts.UID,
-					Controller: ptr(true),
+					Controller: new(true),
 				},
 			},
 		},
 		Spec: temperv1alpha1.TrialSpec{
 			Target: temperv1alpha1.Target{
 				Kind: "Deployment",
-				Name: ptr("pay-one"),
+				Name: new("pay-one"),
 			},
 		},
 		Status: temperv1alpha1.TrialStatus{
@@ -232,7 +228,7 @@ func TestWatcher_DoesNotHaltNonTrialSetTrial(t *testing.T) {
 			Labels: map[string]string{},
 		},
 		Spec: temperv1alpha1.TrialSpec{
-			Target: temperv1alpha1.Target{Kind: "Deployment", Name: ptr("pay-one")},
+			Target: temperv1alpha1.Target{Kind: "Deployment", Name: new("pay-one")},
 		},
 		Status: temperv1alpha1.TrialStatus{Phase: temperv1alpha1.TrialPhaseRunning},
 	}
@@ -354,6 +350,55 @@ func TestWatcher_ConsecutiveFailuresThresholdHaltsOnThird(t *testing.T) {
 	assert.Equal(t, string(temperv1alpha1.HaltCodeUnreachable),
 		got.Annotations[temperv1alpha1.AnnotationHaltCode])
 	assert.Contains(t, got.Annotations[temperv1alpha1.AnnotationHaltReason], "unreachable")
+}
+
+// TestWatcher_SweepsStaleFailureEntries verifies that a Trial which ends
+// mid-failure-streak does not leave its consecutiveFailures entry behind.
+// Trial names are unique per batch and never reused, so without the sweep the
+// map would grow for the lifetime of the process.
+func TestWatcher_SweepsStaleFailureEntries(t *testing.T) {
+	ctx := context.Background()
+
+	ts := &temperv1alpha1.TrialSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      "ts-sweep",
+			UID:       types.UID("ts-sweep-uid"),
+		},
+		Spec: temperv1alpha1.TrialSetSpec{
+			Safeguards: alertSafeguards(),
+		},
+	}
+	trial := makeTrialSetOwnedTrial(ts, "ts-sweep-pay-one-1700000005")
+
+	scheme := newScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ts, trial).
+		WithStatusSubresource(&temperv1alpha1.TrialSet{}, &temperv1alpha1.Trial{}).
+		Build()
+	w := NewWatcher(fakeClient, events.NewFakeRecorder(32))
+	w.newAlertChecker = func(_ string) (AlertChecker, error) {
+		return &erringAlertChecker{err: assertError("alertmanager unreachable")}, nil
+	}
+	w.newMetricsQuerier = func(_ string) (MetricsQuerier, error) {
+		return &fakeMetricsQuerier{}, nil
+	}
+	w.failureThreshold = 100 // high, so the streak never halts during the test
+
+	// Tick 1: the checker errors, so the Trial accumulates a failure entry.
+	w.checkAll(ctx)
+	key := trial.Namespace + "/" + trial.Name
+	require.Contains(t, w.consecutiveFailures, key,
+		"a transient error must be tracked while the Trial is Running")
+
+	// The Trial finishes and is deleted (e.g. batch done, retention reaped it).
+	require.NoError(t, w.client.Delete(ctx, trial))
+
+	// Tick 2: the Trial is gone, so its streak entry must be swept.
+	w.checkAll(ctx)
+	assert.NotContains(t, w.consecutiveFailures, key,
+		"finished Trials must not leave consecutiveFailures entries behind")
 }
 
 // assertError is a tiny error type for test fixtures.

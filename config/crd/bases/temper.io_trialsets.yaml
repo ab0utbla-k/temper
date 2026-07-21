@@ -59,8 +59,6 @@ spec:
                   the previous one is still active. Default Forbid (skip the new fire).
                 enum:
                 - Forbid
-                - Allow
-                - Replace
                 type: string
               maxConcurrent:
                 default: 1
@@ -465,7 +463,8 @@ spec:
                     type: integer
                 type: object
               lastDiscoveryTime:
-                description: lastDiscoveryTime is when Deployments were last listed.
+                description: lastDiscoveryTime is when a discovery pass last changed
+                  this status.
                 format: date-time
                 type: string
               lastScheduleTime:
@@ -482,6 +481,15 @@ spec:
                 - Halted
                 - Failed
                 type: string
+              skippedDeployments:
+                description: |-
+                  skippedDeployments are Deployments whose pre-flight safeguard check
+                  failed in the current batch. They stay skipped for the rest of the
+                  batch (per-Deployment "skip this run" semantics, like the CronTrial
+                  pre-flight) and are retried on the next batch.
+                items:
+                  type: string
+                type: array
               trialsCompleted:
                 description: |-
                   trialsCompleted is the number of Trials that reached Completed in the

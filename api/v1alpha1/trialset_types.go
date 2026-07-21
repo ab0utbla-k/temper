@@ -177,11 +177,18 @@ type TrialSetStatus struct {
 	// +optional
 	ActiveTrialNames []string `json:"activeTrialNames,omitempty"`
 
+	// skippedDeployments are Deployments whose pre-flight safeguard check
+	// failed in the current batch. They stay skipped for the rest of the
+	// batch (per-Deployment "skip this run" semantics, like the CronTrial
+	// pre-flight) and are retried on the next batch.
+	// +optional
+	SkippedDeployments []string `json:"skippedDeployments,omitempty"`
+
 	// lastScheduleTime is when the last batch was fired.
 	// +optional
 	LastScheduleTime *metav1.Time `json:"lastScheduleTime,omitempty"`
 
-	// lastDiscoveryTime is when Deployments were last listed.
+	// lastDiscoveryTime is when a discovery pass last changed this status.
 	// +optional
 	LastDiscoveryTime *metav1.Time `json:"lastDiscoveryTime,omitempty"`
 

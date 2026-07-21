@@ -31,6 +31,10 @@ import (
 	temperv1alpha1 "github.com/ab0utbla-k/temper/api/v1alpha1"
 )
 
+// everyMinute is the cron expression scheduled-TrialSet specs use; tests
+// backdate LastScheduleTime to make fires due instead of waiting for a tick.
+const everyMinute = "* * * * *"
+
 // makeTrialSet builds a one-shot TrialSet (no schedule) whose targetSelector
 // matches Deployments carrying app=<appLabel>, via a 5-minute pod-kill
 // scenario (long enough that generated Trials stay Running through the test
@@ -298,9 +302,8 @@ var _ = Describe("TrialSet Controller", func() {
 
 			// A scheduled TrialSet (so a second fire could become due) with
 			// a 1-minute cron. Forbid means: while Running, skip the next fire.
-			oneMin := "* * * * *"
 			trialSet := makeTrialSet("ts-forbid", "default", "ts6", func(ts *temperv1alpha1.TrialSet) {
-				ts.Spec.Schedule = &oneMin
+				ts.Spec.Schedule = new(everyMinute)
 			})
 			key := types.NamespacedName{Namespace: trialSet.Namespace, Name: trialSet.Name}
 			Expect(k8sClient.Create(ctx, trialSet)).To(Succeed())
@@ -374,9 +377,8 @@ var _ = Describe("TrialSet Controller", func() {
 
 			// A scheduled TrialSet (1-minute cron) with LastScheduleTime
 			// backdated so the first fire is immediately due.
-			oneMin := "* * * * *"
 			trialSet := makeTrialSet("ts-cron", "default", "ts8", func(ts *temperv1alpha1.TrialSet) {
-				ts.Spec.Schedule = &oneMin
+				ts.Spec.Schedule = new(everyMinute)
 			})
 			key := types.NamespacedName{Namespace: trialSet.Namespace, Name: trialSet.Name}
 			Expect(k8sClient.Create(ctx, trialSet)).To(Succeed())
@@ -402,9 +404,8 @@ var _ = Describe("TrialSet Controller", func() {
 			ready := createLabeledDeployment(ctx, "pay-batch2", "default", 3, "ts12")
 			patchDeploymentStatus(ctx, ready.Name, ready.Namespace, 3, false)
 
-			oneMin := "* * * * *"
 			trialSet := makeTrialSet("ts-batch-identity", "default", "ts12", func(ts *temperv1alpha1.TrialSet) {
-				ts.Spec.Schedule = &oneMin
+				ts.Spec.Schedule = new(everyMinute)
 			})
 			key := types.NamespacedName{Namespace: trialSet.Namespace, Name: trialSet.Name}
 			Expect(k8sClient.Create(ctx, trialSet)).To(Succeed())
@@ -491,12 +492,15 @@ var _ = Describe("TrialSet Controller", func() {
 			}, 3*time.Second, interval).Should(Succeed())
 
 			// The batch is Running (not Halted) — one unsafe match does not
-			// halt the whole batch.
+			// halt the whole batch — and the skip is recorded in status, so
+			// it persists for the rest of the batch instead of being
+			// re-checked (and re-evented) every reconcile pass.
 			Eventually(func(g Gomega) {
 				var got temperv1alpha1.TrialSet
 				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trialSet), &got)).To(Succeed())
 				g.Expect(got.Status.Phase).To(Equal(temperv1alpha1.TrialSetPhaseRunning))
 				g.Expect(got.Status.History.HaltedBatches).To(Equal(int32(0)))
+				g.Expect(got.Status.SkippedDeployments).To(ContainElement("pay-unsafe"))
 			}, timeout, interval).Should(Succeed())
 		})
 	})

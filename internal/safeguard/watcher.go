@@ -55,6 +55,13 @@ func (w *Watcher) NeedLeaderElection() bool {
 
 func (w *Watcher) checkAll(ctx context.Context) {
 	log := logf.FromContext(ctx)
+
+	// seen collects the consecutiveFailures keys (trial namespace/name) that
+	// are still live this tick, so the sweep at the end can drop entries for
+	// Trials that finished or were deleted mid-streak. Without the sweep the
+	// map grows forever: trial names are unique per batch and never reused.
+	seen := make(map[string]bool)
+
 	var cronTrialList temperv1alpha1.CronTrialList
 	if err := w.client.List(ctx, &cronTrialList); err != nil {
 		log.Error(err, "Failed to list CronTrials")
@@ -67,43 +74,37 @@ func (w *Watcher) checkAll(ctx context.Context) {
 			continue
 		}
 
+		seen[cronTrial.Namespace+"/"+*cronTrial.Status.ActiveTrialName] = true
 		w.checkCronTrial(ctx, cronTrial)
 	}
 
-	// TrialSet-generated Trials carry the temper.io/trial-set label. We list ALL
-	// Trials (no server-side label filter) and filter in-memory by label
-	// presence. controller-runtime's client.MatchingLabels matches label
-	// *equality* (key=value), and an empty value matches only labels whose
-	// value is literally "", not "the key exists" — there is no built-in
-	// label-exists selector in the client API. So a server-side
-	// MatchingLabels{LabelTrialSet:""} would MISS real TrialSet Trials (whose
-	// label value is the TrialSet name, e.g. "ts-halt"). The in-memory
-	// `_, ok := trial.Labels[LabelTrialSet]` check is the correct expression
-	// of "label exists". This is a full scan, acceptable because Trial count
-	// is bounded by TrialSet activity and the watcher ticks every 5s.
-	//
-	// For each matched Running-phase Trial, safeguardsForTrial looks up the
-	// owning TrialSet (by controller owner ref) and returns its Safeguards.
-	// Empty safeguards means skip (no runtime checks). checkTrial is then the
-	// shared halt path shared with the CronTrial branch above.
+	// TrialSet-generated Trials carry the temper.io/trial-set label; HasLabels
+	// filters on label presence regardless of value. For each Running match,
+	// safeguardsForTrial resolves the owning TrialSet's Safeguards (nil means
+	// no runtime checks — skip), and checkTrial is the same halt path the
+	// CronTrial branch above uses.
 	var trialList temperv1alpha1.TrialList
-	if err := w.client.List(ctx, &trialList); err != nil {
+	if err := w.client.List(ctx, &trialList, client.HasLabels{temperv1alpha1.LabelTrialSet}); err != nil {
 		log.Error(err, "Failed to list Trials for TrialSet safeguard checks")
 		return
 	}
 	for i := range trialList.Items {
 		trial := &trialList.Items[i]
-		if _, ok := trial.Labels[temperv1alpha1.LabelTrialSet]; !ok {
-			continue
-		}
 		if trial.Status.Phase != temperv1alpha1.TrialPhaseRunning {
 			continue
 		}
+		seen[trial.Namespace+"/"+trial.Name] = true
 		sg := w.safeguardsForTrial(ctx, trial)
 		if sg == nil {
 			continue
 		}
 		w.checkTrial(ctx, trial, sg)
+	}
+
+	for key := range w.consecutiveFailures {
+		if !seen[key] {
+			delete(w.consecutiveFailures, key)
+		}
 	}
 }
 
