@@ -251,6 +251,15 @@ type ScenarioResult struct {
 	// injectedAt is when the fault was injected.
 	InjectedAt metav1.Time `json:"injectedAt"`
 
+	// readyAt is when the target first reported all replicas Ready after
+	// injection. Unset means that was never observed within the scenario's
+	// duration. Observation starts after the recovery grace period, so the
+	// value is never earlier than that. The gap between readyAt and
+	// recoveredAt is how long the target claimed readiness without actually
+	// serving.
+	// +optional
+	ReadyAt *metav1.Time `json:"readyAt,omitempty"`
+
 	// recoveredAt is when the recovery probe first succeeded. Unset means the
 	// target never recovered within the scenario's duration.
 	// +optional

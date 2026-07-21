@@ -403,6 +403,16 @@ spec:
                       description: injectedAt is when the fault was injected.
                       format: date-time
                       type: string
+                    readyAt:
+                      description: |-
+                        readyAt is when the target first reported all replicas Ready after
+                        injection. Unset means that was never observed within the scenario's
+                        duration. Observation starts after the recovery grace period, so the
+                        value is never earlier than that. The gap between readyAt and
+                        recoveredAt is how long the target claimed readiness without actually
+                        serving.
+                      format: date-time
+                      type: string
                     recoveredAt:
                       description: |-
                         recoveredAt is when the recovery probe first succeeded. Unset means the

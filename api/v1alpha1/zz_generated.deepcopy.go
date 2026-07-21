@@ -462,6 +462,10 @@ func (in *Scenario) DeepCopy() *Scenario {
 func (in *ScenarioResult) DeepCopyInto(out *ScenarioResult) {
 	*out = *in
 	in.InjectedAt.DeepCopyInto(&out.InjectedAt)
+	if in.ReadyAt != nil {
+		in, out := &in.ReadyAt, &out.ReadyAt
+		*out = (*in).DeepCopy()
+	}
 	if in.RecoveredAt != nil {
 		in, out := &in.RecoveredAt, &out.RecoveredAt
 		*out = (*in).DeepCopy()
