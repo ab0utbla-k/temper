@@ -36,9 +36,7 @@ var _ = Describe("TrialSet sample manifest", Serial, func() {
 
 		// The sample intentionally omits metadata.namespace so it applies to any
 		// namespace. For a dry-run Create the object needs a namespace; use the
-		// suite's test namespace. The namespaces field (payments/payments-canary)
-		// is a discovery-scope config of plain strings, not an apiserver-validated
-		// reference, so it does not need those namespaces to exist at apply time.
+		// suite's test namespace.
 		trialSet.Namespace = "default"
 		trialSet.Name = "sample-dryrun"
 

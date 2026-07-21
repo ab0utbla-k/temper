@@ -75,11 +75,12 @@ spec:
 
 ### TrialSet
 
-A `TrialSet` discovers Deployments by label selector (optionally across
-namespaces) and generates one owned Trial per match from a shared inline
-template. Each generated Trial carries a `temper.io/trial-set` label (for
-metrics attribution) and a `spec.target.namespace` pointing at the Deployment's
-namespace, so a TrialSet in one namespace can target workloads in others.
+A `TrialSet` discovers Deployments by label selector in its own namespace and
+generates one owned Trial per match from a shared inline template. Each
+generated Trial carries a `temper.io/trial-set` label (for metrics
+attribution). Discovery, Trials, and targets all stay in the TrialSet's
+namespace, so namespace-scoped RBAC on Trials bounds the blast radius; to
+sweep several namespaces, create one TrialSet per namespace.
 
 `maxConcurrent` throttles how many Trials run at once within a batch;
 `minReadyReplicas` filters out Deployments that are not ready at discovery
@@ -92,20 +93,15 @@ apiVersion: temper.io/v1alpha1
 kind: TrialSet
 metadata:
   name: pod-kill-all-payments
+  namespace: payments
 spec:
-  # targetSelector picks Deployments to generate Trials for by label.
+  # targetSelector picks Deployments to generate Trials for by label,
+  # in the TrialSet's own namespace.
   targetSelector:
     matchLabels:
       app.kubernetes.io/part-of: payments
-  # namespaces scopes discovery across namespaces. Unset means the TrialSet's
-  # own namespace only. Generated Trials carry spec.target.namespace pointing
-  # at each matching Deployment's namespace (cross-namespace targeting).
-  namespaces:
-    names:
-      - payments
-      - payments-canary
   # trialTemplate is applied to each discovered Deployment; the controller
-  # stamps target.name and target.namespace onto each generated Trial.
+  # stamps target.name onto each generated Trial.
   trialTemplate:
     scenarios:
       - type: pod-kill
@@ -120,10 +116,8 @@ spec:
     maxUnavailable: 1
 ```
 
-The TrialSet controller, the safeguard watcher (which halts TrialSet-generated
-Trials that breach a safeguard during a run), and the cross-namespace trust
-boundary are documented in the design doc at
-[.kimchi/docs/trialset-design.md](.kimchi/docs/trialset-design.md).
+The safeguard watcher halts TrialSet-generated Trials that breach a safeguard
+during a run, same as for CronTrial-generated ones.
 
 ## Scenarios
 

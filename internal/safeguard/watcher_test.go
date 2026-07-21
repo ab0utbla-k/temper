@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -113,9 +112,8 @@ func makeTrialSetOwnedTrial(ts *temperv1alpha1.TrialSet, name string) *temperv1a
 		},
 		Spec: temperv1alpha1.TrialSpec{
 			Target: temperv1alpha1.Target{
-				Kind:      "Deployment",
-				Name:      ptr("pay-one"),
-				Namespace: ptr(ts.Namespace),
+				Kind: "Deployment",
+				Name: ptr("pay-one"),
 			},
 		},
 		Status: temperv1alpha1.TrialStatus{
@@ -252,12 +250,10 @@ func TestWatcher_DoesNotHaltNonTrialSetTrial(t *testing.T) {
 // TestWatcher_HaltsOnReplicaMinSafeguard verifies the replica-check path for
 // TrialSet-generated Trials: when the owning TrialSet sets
 // minReplicasAvailable and the target Deployment's AvailableReplicas is below
-// it, the Trial is halted with the replica-min code. This exercises the
-// cross-namespace target lookup (trial.Spec.Target.Namespace).
+// it, the Trial is halted with the replica-min code.
 func TestWatcher_HaltsOnReplicaMinSafeguard(t *testing.T) {
 	ctx := context.Background()
 
-	targetNS := "payments"
 	minReplicas := int32(3)
 	ts := &temperv1alpha1.TrialSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -271,45 +267,14 @@ func TestWatcher_HaltsOnReplicaMinSafeguard(t *testing.T) {
 			},
 		},
 	}
-	// Trial lives in "default" but targets a Deployment in "payments"
-	// (cross-namespace, Option 2). The watcher must look up the Deployment
-	// in the target's namespace, not the Trial's.
-	trial := &temperv1alpha1.Trial{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "default",
-			Name:      "ts-replica-pay-one-1700000002",
-			Labels: map[string]string{
-				temperv1alpha1.LabelTrialSet: ts.Name,
-			},
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion: "temper.io/v1alpha1",
-					Kind:       "TrialSet",
-					Name:       ts.Name,
-					UID:        ts.UID,
-					Controller: ptr(true),
-				},
-			},
-		},
-		Spec: temperv1alpha1.TrialSpec{
-			Target: temperv1alpha1.Target{
-				Kind:      "Deployment",
-				Name:      ptr("pay-one"),
-				Namespace: ptr(targetNS),
-			},
-		},
-		Status: temperv1alpha1.TrialStatus{Phase: temperv1alpha1.TrialPhaseRunning},
-	}
-	// Target Deployment in "payments" with AvailableReplicas=1 < minReplicas=3.
+	trial := makeTrialSetOwnedTrial(ts, "ts-replica-pay-one-1700000002")
+	// Target Deployment with AvailableReplicas=1 < minReplicas=3.
 	dep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Namespace: targetNS, Name: "pay-one"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "pay-one"},
 		Status:     appsv1.DeploymentStatus{AvailableReplicas: 1},
 	}
-	// The "default" namespace must exist so the fake client is happy if it
-	// needs to resolve namespace-scoped lookups.
-	defaultNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
 
-	w := newWatcherWithFake(t, []client.Object{defaultNS, ts, trial, dep}, nil)
+	w := newWatcherWithFake(t, []client.Object{ts, trial, dep}, nil)
 
 	w.checkAll(ctx)
 

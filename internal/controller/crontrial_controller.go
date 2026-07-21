@@ -270,20 +270,13 @@ func (r *CronTrialReconciler) createTrial(ctx context.Context, cronTrial *temper
 
 // checkSafeguards delegates to the shared safeguard.CheckSafeguards helper,
 // resolving the CronTrial's pointer-bearing spec into the plain string
-// arguments the helper expects. The CronTrial's own namespace is used for
-// metric attribution (resource attribution per trialset-design.md); the target
-// namespace is the Trial template's target.namespace if set, else the
-// CronTrial's namespace (same-namespace default).
+// arguments the helper expects.
 func (r *CronTrialReconciler) checkSafeguards(ctx context.Context, cronTrial *temperv1alpha1.CronTrial, template *temperv1alpha1.Trial) (bool, string, error) {
-	targetNamespace := cronTrial.Namespace
-	if template.Spec.Target.Namespace != nil {
-		targetNamespace = *template.Spec.Target.Namespace
-	}
 	targetName := ""
 	if template.Spec.Target.Name != nil {
 		targetName = *template.Spec.Target.Name
 	}
-	return safeguard.CheckSafeguards(ctx, r.Client, cronTrial.Namespace, targetNamespace, targetName,
+	return safeguard.CheckSafeguards(ctx, r.Client, cronTrial.Namespace, targetName,
 		cronTrial.Spec.Safeguards, r.NewAlertChecker, r.NewMetricsQuerier)
 }
 

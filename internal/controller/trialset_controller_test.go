@@ -142,17 +142,14 @@ var _ = Describe("TrialSet Controller", func() {
 				g.Expect(ts.Status.TrialsCreated).To(Equal(int32(2)))
 			}, timeout, interval).Should(Succeed())
 
-			// Each Trial carries the temper.io/trial-set label and points
-			// spec.target.namespace at the Deployment's namespace (same as
-			// the TrialSet here, but the plumbing is what we assert).
+			// Each Trial carries the temper.io/trial-set label and targets
+			// one of the discovered Deployments by name.
 			trials := listOwnedTrials(trialSet.Name, trialSet.Namespace)
 			Expect(trials).To(HaveLen(2))
 			names := map[string]bool{}
 			for _, t := range trials {
 				Expect(t.Labels).To(HaveKeyWithValue(temperv1alpha1.LabelTrialSet, trialSet.Name))
 				Expect(t.Spec.Target.Name).NotTo(BeNil())
-				Expect(t.Spec.Target.Namespace).NotTo(BeNil())
-				Expect(*t.Spec.Target.Namespace).To(Equal("default"))
 				names[*t.Spec.Target.Name] = true
 			}
 			Expect(names).To(HaveKey("pay-one"))

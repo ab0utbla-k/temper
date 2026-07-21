@@ -180,22 +180,11 @@ func (w *Watcher) checkTrial(ctx context.Context, trial *temperv1alpha1.Trial, s
 		if trial.Spec.Target.Name == nil {
 			log.Info("Skipping replica check: no target name", "trial", key)
 		} else {
-			// A Trial may target a Deployment in a different namespace than
-			// the Trial/CronTrial that owns it (e.g. TrialSet-generated
-			// Trials). Fall back to the Trial's own namespace for the legacy
-			// same-namespace path.
-			targetNamespace := trial.Namespace
-			if trial.Spec.Target.Namespace != nil {
-				targetNamespace = *trial.Spec.Target.Namespace
-			}
-
-			// Namespace label is the Trial's own namespace (resource
-			// attribution), not the target's — intentional per trialset-design.md.
 			metrics.SafeguardChecksTotal.WithLabelValues(trial.Namespace, metrics.SafeguardTypeReplicas).Inc()
 
 			var dep appsv1.Deployment
 			if err := w.client.Get(ctx, client.ObjectKey{
-				Namespace: targetNamespace,
+				Namespace: trial.Namespace,
 				Name:      *trial.Spec.Target.Name,
 			}, &dep); err != nil {
 				checkErr = err
@@ -263,9 +252,6 @@ func (w *Watcher) checkAlerts(ctx context.Context, namespace string, sg *temperv
 		return temperv1alpha1.HaltCodeConfigError, fmt.Sprintf("Invalid alert source config: %v", err), nil
 	}
 
-	// Namespace label is the Trial's own namespace (resource attribution),
-	// not the target's — intentional per trialset-design.md. For
-	// CronTrial-generated Trials this equals the CronTrial's namespace.
 	metrics.SafeguardChecksTotal.WithLabelValues(namespace, metrics.SafeguardTypeAlerts).Inc()
 
 	return CheckAlertsFiring(ctx, sg.HaltOnAlertLabels, checker)
@@ -281,9 +267,6 @@ func (w *Watcher) checkSLO(ctx context.Context, namespace string, sg *temperv1al
 		return temperv1alpha1.HaltCodeConfigError, fmt.Sprintf("Invalid metrics source config: %v", err), nil
 	}
 
-	// Namespace label is the Trial's own namespace (resource attribution),
-	// not the target's — intentional per trialset-design.md. For
-	// CronTrial-generated Trials this equals the CronTrial's namespace.
 	metrics.SafeguardChecksTotal.WithLabelValues(namespace, metrics.SafeguardTypeSLO).Inc()
 
 	return CheckSLOBreach(ctx, sg.SLOProtection, querier)
@@ -300,9 +283,6 @@ func (w *Watcher) haltTrial(ctx context.Context, trial *temperv1alpha1.Trial, co
 		return err
 	}
 
-	// Namespace label is the Trial's own namespace (resource attribution),
-	// not the target's — intentional per trialset-design.md. Do not change
-	// to *trial.Spec.Target.Namespace.
 	metrics.SafeguardHaltsTotal.WithLabelValues(trial.Namespace, string(code)).Inc()
 	return nil
 }

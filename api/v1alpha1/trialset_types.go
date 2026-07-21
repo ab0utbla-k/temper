@@ -28,23 +28,8 @@ import (
 // For Kubernetes API conventions, see:
 // https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
 
-// NamespaceSelector scopes Deployment discovery to certain namespaces.
-// Empty means the TrialSet's own namespace only.
-type NamespaceSelector struct {
-	// names is an explicit list of namespace names. When set, discovery only
-	// lists Deployments in these namespaces.
-	// +optional
-	Names []string `json:"names,omitempty"`
-
-	// labelSelector matches namespace labels. When set, discovery only lists
-	// Deployments in namespaces whose labels match this selector. If both
-	// names and labelSelector are set, a namespace must match both.
-	// +optional
-	LabelSelector *metav1.LabelSelector `json:"labelSelector,omitempty"`
-}
-
 // TrialTemplateSpec is a Trial spec template without target — the TrialSet
-// controller sets target.name and target.namespace per discovered Deployment.
+// controller sets target.name per discovered Deployment.
 type TrialTemplateSpec struct {
 	// scenarios is the ordered list of fault injection steps applied to each
 	// discovered Deployment.
@@ -60,21 +45,15 @@ type TrialTemplateSpec struct {
 // TrialSetSpec defines the desired state of TrialSet
 type TrialSetSpec struct {
 	// targetSelector selects Deployments to generate Trials for. Matches via
-	// labels. Cross-namespace discovery is allowed: temper's manager is
-	// cluster-scoped (no --namespace flag in config/manager/manager.yaml)
-	// and the manager-role is a ClusterRole (see config/rbac/role.yaml).
+	// labels, in the TrialSet's own namespace only — a Trial's target always
+	// lives in the Trial's namespace, so RBAC on Trials bounds the blast
+	// radius per namespace.
 	// +kubebuilder:validation:Required
 	TargetSelector metav1.LabelSelector `json:"targetSelector"`
 
-	// namespaces scopes Deployment discovery. Empty means the TrialSet's own
-	// namespace only. When set to explicit names or a label selector,
-	// discovery lists Deployments across those namespaces.
-	// +optional
-	Namespaces *NamespaceSelector `json:"namespaces,omitempty"`
-
 	// trialTemplate is applied to each discovered Deployment. The controller
-	// stamps target.name and target.namespace onto each generated Trial from
-	// the Deployment it matched.
+	// stamps target.name onto each generated Trial from the Deployment it
+	// matched.
 	// +kubebuilder:validation:Required
 	TrialTemplate TrialTemplateSpec `json:"trialTemplate"`
 

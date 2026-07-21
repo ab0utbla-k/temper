@@ -166,22 +166,6 @@ spec:
                     description: name targets a specific resource by name. Mutually
                       exclusive with selector.
                     type: string
-                  namespace:
-                    description: |-
-                      namespace overrides the Trial's own namespace for target lookup.
-                      Empty means the Trial's namespace. Used by TrialSet to target
-                      Deployments in other namespaces.
-
-                      Security note: this field lets a Trial in namespace A mutate workloads
-                      in namespace B. It requires the controller's RBAC to span both
-                      namespaces — temper's manager-role is a ClusterRole (see
-                      config/rbac/role.yaml) and the manager is cluster-scoped (no
-                      --namespace flag, see config/manager/manager.yaml), so this works by
-                      default. In multi-tenant clusters, restrict who can create Trials
-                      (and TrialSets) via Kubernetes RBAC: any user who can create a Trial
-                      with target.namespace set can fault-inject into that namespace's
-                      workloads. See .kimchi/docs/trialset-design.md (Risks).
-                    type: string
                   selector:
                     description: selector targets resources by label. Mutually exclusive
                       with name.

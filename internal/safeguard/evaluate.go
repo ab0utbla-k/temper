@@ -16,16 +16,9 @@ import (
 // It is shared by the CronTrial and TrialSet controllers. The callers resolve
 // their own pointer-bearing spec into the plain string arguments here.
 //
-// resourceNamespace is the namespace used for metric attribution — the owning
-// CronTrial's or TrialSet's own namespace. It is intentionally NOT the target's
-// namespace (see trialset-design.md: metrics attribute to the resource that
-// owns the run, so a TrialSet in the control plane namespace is billed for
-// chaos it inflicts on a workload namespace).
-//
-// targetNamespace is where the target Deployment actually lives. Under
-// cross-namespace targeting (Trial.spec.target.namespace set, or a TrialSet
-// matching Deployments in another namespace) this differs from
-// resourceNamespace.
+// namespace is both where the target Deployment lives and the metric label:
+// the owning CronTrial/TrialSet, its Trials, and their targets always share
+// one namespace.
 //
 // targetName is the Deployment name. When empty, all checks are skipped
 // (safeguards only make sense against a concrete target).
@@ -36,8 +29,7 @@ import (
 func CheckSafeguards(
 	ctx context.Context,
 	c client.Client,
-	resourceNamespace string,
-	targetNamespace string,
+	namespace string,
 	targetName string,
 	sg *temperv1alpha1.Safeguards,
 	newAlertChecker func(string) (AlertChecker, error),
@@ -48,13 +40,11 @@ func CheckSafeguards(
 	}
 
 	if sg.MinReplicasAvailable != nil || sg.MaxUnavailable != nil {
-		// Namespace label is the owning resource's own namespace (resource
-		// attribution), not the target's — intentional per trialset-design.md.
-		metrics.SafeguardChecksTotal.WithLabelValues(resourceNamespace, metrics.SafeguardTypeReplicas).Inc()
+		metrics.SafeguardChecksTotal.WithLabelValues(namespace, metrics.SafeguardTypeReplicas).Inc()
 
 		var dep appsv1.Deployment
 		if err := c.Get(ctx, client.ObjectKey{
-			Namespace: targetNamespace,
+			Namespace: namespace,
 			Name:      targetName,
 		}, &dep); err != nil {
 			return false, "", fmt.Errorf("get deployment: %w", err)
@@ -76,9 +66,7 @@ func CheckSafeguards(
 			return false, fmt.Sprintf("create alert checker: %v", err), nil
 		}
 
-		// Namespace label is the owning resource's own namespace (resource
-		// attribution), not the target's — intentional per trialset-design.md.
-		metrics.SafeguardChecksTotal.WithLabelValues(resourceNamespace, metrics.SafeguardTypeAlerts).Inc()
+		metrics.SafeguardChecksTotal.WithLabelValues(namespace, metrics.SafeguardTypeAlerts).Inc()
 
 		_, reason, err := CheckAlertsFiring(ctx, sg.HaltOnAlertLabels, checker)
 		if err != nil {
@@ -96,9 +84,7 @@ func CheckSafeguards(
 			return false, fmt.Sprintf("create metrics querier: %v", err), nil
 		}
 
-		// Namespace label is the owning resource's own namespace (resource
-		// attribution), not the target's — intentional per trialset-design.md.
-		metrics.SafeguardChecksTotal.WithLabelValues(resourceNamespace, metrics.SafeguardTypeSLO).Inc()
+		metrics.SafeguardChecksTotal.WithLabelValues(namespace, metrics.SafeguardTypeSLO).Inc()
 
 		_, reason, err := CheckSLOBreach(ctx, sg.SLOProtection, querier)
 		if err != nil {

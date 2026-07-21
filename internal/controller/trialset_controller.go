@@ -23,7 +23,6 @@ import (
 
 	"github.com/robfig/cron/v3"
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -40,10 +39,9 @@ import (
 // TrialSetReconciler reconciles a TrialSet object. It mirrors the CronTrial
 // reconciler's phase machine (Idle/Running/Paused/Completed/Halted/Failed)
 // but fans out to one owned Trial per discovered Deployment, throttled by
-// maxConcurrent. Generated Trials live in the TrialSet's namespace (so the
-// owner reference garbage-collects them) and carry spec.target.namespace set
-// to each discovered Deployment's namespace (cross-namespace targeting; see
-// trialset-design.md, Option 2).
+// maxConcurrent. Discovery, the generated Trials, and their targets all stay
+// in the TrialSet's own namespace — the owner reference garbage-collects the
+// Trials, and namespace-scoped RBAC on Trials bounds the blast radius.
 type TrialSetReconciler struct {
 	client.Client
 	Scheme            *runtime.Scheme
@@ -57,7 +55,6 @@ type TrialSetReconciler struct {
 // +kubebuilder:rbac:groups=temper.io,resources=trialsets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=temper.io,resources=trials,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile drives the TrialSet phase machine. Phases:
@@ -71,8 +68,7 @@ type TrialSetReconciler struct {
 //
 // Forbid concurrency is enforced structurally: a new batch only ever fires
 // from the Idle phase, and a Running TrialSet never re-enters Idle until the
-// batch finishes — so overlapping batches cannot start. (Allow is treated as
-// Forbid for now; Replace is deferred — see trialset-design.md Open Q 2.)
+// batch finishes — so overlapping batches cannot start.
 func (r *TrialSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -177,11 +173,11 @@ func (r *TrialSetReconciler) reconcileIdle(ctx context.Context, trialSet *temper
 // no Trial is active. Safeguard-unsafe Deployments are skipped (covered
 // without a Trial) — they do not halt the batch (per-Deployment semantics).
 //
-// Discovery re-lists Deployments on each reconcile (continuous discovery,
-// trialset-design.md Open Q 3). This is a minor deviation from "snapshot at
-// fire only" but is idempotent: a Deployment that already has a Trial (any
-// phase) is never given a second one, and active counts include every owned
-// Trial, so completion is never reached while a Trial is still running.
+// Discovery re-lists Deployments on each reconcile (continuous discovery
+// rather than a snapshot at fire time). This is idempotent: a Deployment that
+// already has a Trial (any phase) is never given a second one, and active
+// counts include every owned Trial, so completion is never reached while a
+// Trial is still running.
 func (r *TrialSetReconciler) reconcileRunning(ctx context.Context, trialSet *temperv1alpha1.TrialSet) (ctrl.Result, error) {
 	// 1. List owned Trials and categorize.
 	var trialList temperv1alpha1.TrialList
@@ -329,10 +325,9 @@ func (r *TrialSetReconciler) fireBatch(ctx context.Context, trialSet *temperv1al
 }
 
 // completeBatch finalizes a finished batch: sets phase Completed (one halt
-// does not halt the whole batch — per-Deployment semantics, per
-// trialset-design.md decision 4), bumps history counters, and requeues
-// scheduled TrialSets so reconcileIdle can re-arm the next fire. One-shot
-// TrialSets return terminal.
+// does not halt the whole batch — per-Deployment semantics), bumps history
+// counters, and requeues scheduled TrialSets so reconcileIdle can re-arm the
+// next fire. One-shot TrialSets return terminal.
 func (r *TrialSetReconciler) completeBatch(
 	ctx context.Context,
 	trialSet *temperv1alpha1.TrialSet,
@@ -373,113 +368,47 @@ func (r *TrialSetReconciler) failTrialSet(ctx context.Context, trialSet *temperv
 	return ctrl.Result{}, nil
 }
 
-// discoverMatches lists Deployments matching targetSelector across the
-// configured namespaces (empty = TrialSet's own namespace), then filters out
-// those below minReadyReplicas. Cross-namespace discovery works because
-// temper's manager is cluster-scoped and the manager-role is a ClusterRole
-// (see trialset-design.md, Risks).
+// discoverMatches lists Deployments matching targetSelector in the TrialSet's
+// own namespace, then filters out those below minReadyReplicas.
 func (r *TrialSetReconciler) discoverMatches(ctx context.Context, trialSet *temperv1alpha1.TrialSet) ([]appsv1.Deployment, error) {
-	namespaces, err := r.discoverNamespaces(ctx, trialSet)
-	if err != nil {
-		return nil, err
-	}
-
 	selector, err := metav1.LabelSelectorAsSelector(&trialSet.Spec.TargetSelector)
 	if err != nil {
 		return nil, fmt.Errorf("parse targetSelector: %w", err)
 	}
 
+	var depList appsv1.DeploymentList
+	if err := r.List(ctx, &depList,
+		client.InNamespace(trialSet.Namespace),
+		client.MatchingLabelsSelector{Selector: selector},
+	); err != nil {
+		return nil, fmt.Errorf("list deployments: %w", err)
+	}
+
 	var matches []appsv1.Deployment
-	for _, ns := range namespaces {
-		var depList appsv1.DeploymentList
-		if err := r.List(ctx, &depList,
-			client.InNamespace(ns),
-			client.MatchingLabelsSelector{Selector: selector},
-		); err != nil {
-			return nil, fmt.Errorf("list deployments in %s: %w", ns, err)
+	for i := range depList.Items {
+		dep := &depList.Items[i]
+		if trialSet.Spec.MinReadyReplicas != nil && dep.Status.ReadyReplicas < *trialSet.Spec.MinReadyReplicas {
+			continue
 		}
-		for i := range depList.Items {
-			dep := &depList.Items[i]
-			if trialSet.Spec.MinReadyReplicas != nil && dep.Status.ReadyReplicas < *trialSet.Spec.MinReadyReplicas {
-				continue
-			}
-			matches = append(matches, *dep)
-		}
+		matches = append(matches, *dep)
 	}
 	return matches, nil
 }
 
-// discoverNamespaces resolves spec.namespaces to a concrete list. Empty
-// (nil selector, no names) means the TrialSet's own namespace only. When both
-// names and labelSelector are set, a namespace must match both (intersection).
-func (r *TrialSetReconciler) discoverNamespaces(ctx context.Context, trialSet *temperv1alpha1.TrialSet) ([]string, error) {
-	ns := trialSet.Spec.Namespaces
-	if ns == nil || (len(ns.Names) == 0 && ns.LabelSelector == nil) {
-		return []string{trialSet.Namespace}, nil
-	}
-
-	var matched []string
-	if ns.LabelSelector != nil {
-		sel, err := metav1.LabelSelectorAsSelector(ns.LabelSelector)
-		if err != nil {
-			return nil, fmt.Errorf("parse namespace labelSelector: %w", err)
-		}
-		var nsList corev1.NamespaceList
-		if err := r.List(ctx, &nsList, client.MatchingLabelsSelector{Selector: sel}); err != nil {
-			return nil, fmt.Errorf("list namespaces: %w", err)
-		}
-		for i := range nsList.Items {
-			matched = append(matched, nsList.Items[i].Name)
-		}
-	}
-
-	if len(ns.Names) > 0 {
-		if ns.LabelSelector != nil {
-			// Intersection: keep only matched namespaces also named in Names.
-			allowed := make(map[string]bool, len(ns.Names))
-			for _, n := range ns.Names {
-				allowed[n] = true
-			}
-			filtered := matched[:0]
-			for _, n := range matched {
-				if allowed[n] {
-					filtered = append(filtered, n)
-				}
-			}
-			matched = filtered
-		} else {
-			matched = append(matched, ns.Names...)
-		}
-	}
-
-	if len(matched) == 0 {
-		// User configured namespaces but none exist — return empty so no
-		// Deployments are listed (do not fall back to the TrialSet namespace).
-		return nil, nil
-	}
-	return matched, nil
-}
-
 // checkSafeguards delegates to the shared safeguard.CheckSafeguards helper.
-// The TrialSet's own namespace is used for metric attribution (resource
-// attribution per trialset-design.md); the target namespace is the
-// discovered Deployment's namespace (which may differ under cross-namespace
-// discovery).
 func (r *TrialSetReconciler) checkSafeguards(ctx context.Context, trialSet *temperv1alpha1.TrialSet, dep *appsv1.Deployment) (bool, string, error) {
-	return safeguard.CheckSafeguards(ctx, r.Client, trialSet.Namespace, dep.Namespace, dep.Name,
+	return safeguard.CheckSafeguards(ctx, r.Client, trialSet.Namespace, dep.Name,
 		trialSet.Spec.Safeguards, r.NewAlertChecker, r.NewMetricsQuerier)
 }
 
 // createTrialFor stamps a Trial from the inline template pointed at dep. The
-// Trial lives in the TrialSet's namespace (owner ref + GC), carries the
-// temper.io/trial-set label (metrics attribution + watcher scope), and sets
-// spec.target.namespace to the Deployment's namespace (cross-namespace
-// targeting). Name is <trialset>-<deployment>-<unix>.
+// Trial lives in the TrialSet's namespace (owner ref + GC) and carries the
+// temper.io/trial-set label (metrics attribution + watcher scope). Name is
+// <trialset>-<deployment>-<unix>.
 func (r *TrialSetReconciler) createTrialFor(ctx context.Context, trialSet *temperv1alpha1.TrialSet, dep *appsv1.Deployment) error {
 	tmpl := trialSet.Spec.TrialTemplate.DeepCopy()
 
 	depName := dep.Name
-	depNs := dep.Namespace
 	trialName := fmt.Sprintf("%s-%s-%d", trialSet.Name, dep.Name, time.Now().Unix())
 
 	trial := &temperv1alpha1.Trial{
@@ -490,9 +419,8 @@ func (r *TrialSetReconciler) createTrialFor(ctx context.Context, trialSet *tempe
 		},
 		Spec: temperv1alpha1.TrialSpec{
 			Target: temperv1alpha1.Target{
-				Kind:      "Deployment",
-				Name:      &depName,
-				Namespace: &depNs,
+				Kind: "Deployment",
+				Name: &depName,
 			},
 			Scenarios: tmpl.Scenarios,
 			Execution: tmpl.Execution,
@@ -507,7 +435,7 @@ func (r *TrialSetReconciler) createTrialFor(ctx context.Context, trialSet *tempe
 		return fmt.Errorf("create trial: %w", err)
 	}
 	r.Recorder.Eventf(trialSet, trial, "Normal", "TrialCreated", "TrialCreated",
-		"Created trial %s for deployment %s/%s", trialName, depNs, depName)
+		"Created trial %s for deployment %s", trialName, depName)
 	return nil
 }
 

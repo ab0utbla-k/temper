@@ -6,24 +6,14 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: pod-kill-all-payments
 spec:
-  # targetSelector picks Deployments to generate Trials for by label.
-  # Here: any Deployment labeled app.kubernetes.io/part-of=payments.
+  # targetSelector picks Deployments to generate Trials for by label, in the
+  # TrialSet's own namespace. Here: any Deployment labeled
+  # app.kubernetes.io/part-of=payments.
   targetSelector:
     matchLabels:
       app.kubernetes.io/part-of: payments
-  # namespaces scopes discovery across namespaces. Unset means the TrialSet's
-  # own namespace only. When set to explicit names (as here), discovery lists
-  # Deployments across those namespaces, and each generated Trial's
-  # spec.target.namespace points at the matching Deployment's namespace
-  # (cross-namespace targeting — see Trial.spec.target.namespace).
-  # Note: the named namespaces must exist for discovery to find Deployments;
-  # the TrialSet itself applies cleanly without them.
-  namespaces:
-    names:
-      - payments
-      - payments-canary
   # trialTemplate is applied to each discovered Deployment. The controller
-  # stamps target.name and target.namespace onto each generated Trial.
+  # stamps target.name onto each generated Trial.
   trialTemplate:
     scenarios:
       - type: pod-kill
