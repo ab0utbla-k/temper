@@ -43,6 +43,7 @@ const (
 	trialFinalizer      = "temper.io/trial-cleanup"
 	recoveryGracePeriod = 5 * time.Second
 	targetReadyGrace    = 60 * time.Second
+	passportTTL         = 30 * 24 * time.Hour
 )
 
 // TrialReconciler reconciles a Trial object
@@ -610,6 +611,12 @@ func (r *TrialReconciler) completeTrial(ctx context.Context, trial *temperv1alph
 	}
 	trial.Status.Outcome = outcome
 
+	if outcome == temperv1alpha1.OutcomePassed {
+		if err := r.stampPassport(ctx, trial); err != nil {
+			return ctrl.Result{}, fmt.Errorf("stamp passport: %w", err)
+		}
+	}
+
 	if err := r.Status().Update(ctx, trial); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status to Completed: %w", err)
 	}
@@ -618,6 +625,41 @@ func (r *TrialReconciler) completeTrial(ctx context.Context, trial *temperv1alph
 	metrics.TrialsTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), "completed").Inc()
 	metrics.TrialDurationSeconds.WithLabelValues(trial.Namespace, sourceLabel(trial)).Observe(time.Since(trial.CreationTimestamp.Time).Seconds())
 	return ctrl.Result{}, nil
+}
+
+// stampPassport records spot eligibility on a passed trial. Only a
+// spot-reclaim scenario proves it, so trials without one are left unstamped.
+// A missing target Deployment skips the stamp rather than erroring: the
+// verdict must not be held hostage by a workload deleted after the run.
+func (r *TrialReconciler) stampPassport(ctx context.Context, trial *temperv1alpha1.Trial) error {
+	ranSpot := false
+	for _, res := range trial.Status.ScenarioResults {
+		if res.Type == temperv1alpha1.ScenarioTypeSpotReclaim {
+			ranSpot = true
+			break
+		}
+	}
+	if !ranSpot || trial.Spec.Target.Name == nil {
+		return nil
+	}
+
+	var dep appsv1.Deployment
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: trial.Namespace,
+		Name:      *trial.Spec.Target.Name,
+	}, &dep); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("get deployment: %w", err)
+	}
+
+	trial.Status.Passport = &temperv1alpha1.Passport{
+		Eligible:         true,
+		TestedGeneration: dep.Generation,
+		ExpiresAt:        metav1.NewTime(time.Now().Add(passportTTL)),
+	}
+	return nil
 }
 
 func (r *TrialReconciler) failTrial(ctx context.Context, trial *temperv1alpha1.Trial, reason string) (ctrl.Result, error) {

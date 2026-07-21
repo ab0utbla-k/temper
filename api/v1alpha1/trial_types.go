@@ -324,6 +324,24 @@ type Risk struct {
 	Message string `json:"message,omitempty"`
 }
 
+// Passport is a machine-readable stamp that the target proved, by a passed
+// spot-reclaim trial, that it survives a spot interruption. It is evidence
+// about the workload as it was tested, so it names the exact generation and
+// carries an expiry.
+type Passport struct {
+	// eligible reports that the target passed a spot-reclaim trial.
+	Eligible bool `json:"eligible"`
+
+	// testedGeneration is the target Deployment's metadata.generation when the
+	// passing trial completed. A later generation means the workload changed
+	// after it was tested, and the passport no longer describes it.
+	TestedGeneration int64 `json:"testedGeneration"`
+
+	// expiresAt is when this passport stops being valid. A passed run is
+	// evidence with a shelf life, not a permanent property of the workload.
+	ExpiresAt metav1.Time `json:"expiresAt"`
+}
+
 // TrialStatus defines the observed state of Trial.
 type TrialStatus struct {
 	// conditions represent the current state of the Trial resource.
@@ -377,6 +395,11 @@ type TrialStatus struct {
 	// workload (e.g. a single replica, or no PodDisruptionBudget).
 	// +optional
 	Risks []Risk `json:"risks,omitempty"`
+
+	// passport records that the target proved spot eligibility in this trial.
+	// Only set when outcome is Passed and a spot-reclaim scenario ran.
+	// +optional
+	Passport *Passport `json:"passport,omitempty"`
 
 	// haltReason explains why a safeguard stopped the trial. Only set when phase is Halted.
 	// +optional

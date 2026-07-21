@@ -49,6 +49,9 @@ var _ = Describe("Trial Controller", func() {
 			g.Expect(got.Status.Outcome).To(Equal(temperv1alpha1.OutcomePassed))
 			g.Expect(got.Status.Metrics).NotTo(BeNil())
 			g.Expect(got.Status.Metrics.TotalPodsKilled).To(BeNumerically(">", 0))
+
+			// Passports are for spot-reclaim only; a passed pod-kill gets none.
+			g.Expect(got.Status.Passport).To(BeNil())
 		}, 25*time.Second, interval).Should(Succeed())
 	})
 
@@ -99,6 +102,7 @@ var _ = Describe("Trial Controller", func() {
 			res := got.Status.ScenarioResults[0]
 			g.Expect(res.Type).To(Equal(temperv1alpha1.ScenarioTypePodKill))
 			g.Expect(res.InjectedAt.IsZero()).To(BeFalse())
+			g.Expect(res.ReadyAt).NotTo(BeNil())
 			g.Expect(res.RecoveredAt).NotTo(BeNil())
 			g.Expect(res.Findings).To(BeEmpty())
 		}, 15*time.Second, interval).Should(Succeed())
