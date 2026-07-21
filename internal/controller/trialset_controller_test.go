@@ -173,6 +173,30 @@ var _ = Describe("TrialSet Controller", func() {
 			// One-shot with zero matches produces no Trials at all.
 			Expect(listOwnedTrials(trialSet.Name, trialSet.Namespace)).To(BeEmpty())
 		})
+
+		It("should copy the template recovery probe onto generated Trials", func() {
+			ready := createLabeledDeployment(ctx, "pay-recovery", "default", 3, "ts13")
+			patchDeploymentStatus(ctx, ready.Name, ready.Namespace, 3, false)
+
+			probeURL := "http://pay-recovery.default.svc/healthz"
+			trialSet := makeTrialSet("ts-recovery", "default", "ts13", func(ts *temperv1alpha1.TrialSet) {
+				ts.Spec.TrialTemplate.Recovery = &temperv1alpha1.RecoverySpec{
+					HTTP: &temperv1alpha1.HTTPRecoveryProbe{URL: probeURL},
+				}
+			})
+			Expect(k8sClient.Create(ctx, trialSet)).To(Succeed())
+
+			// The generated Trial carries spec.recovery from the template, so
+			// the Trial controller probes real recovery over HTTP instead of
+			// trusting the workload's readiness numbers.
+			Eventually(func(g Gomega) {
+				got := listOwnedTrials(trialSet.Name, trialSet.Namespace)
+				g.Expect(got).To(HaveLen(1))
+				g.Expect(got[0].Spec.Recovery).NotTo(BeNil())
+				g.Expect(got[0].Spec.Recovery.HTTP).NotTo(BeNil())
+				g.Expect(got[0].Spec.Recovery.HTTP.URL).To(Equal(probeURL))
+			}, timeout, interval).Should(Succeed())
+		})
 	})
 
 	Context("maxConcurrent throttling", func() {

@@ -40,6 +40,11 @@ type TrialTemplateSpec struct {
 	// Defaults to sequential when unset.
 	// +optional
 	Execution *Execution `json:"execution,omitempty"`
+
+	// recovery overrides how recovery is detected for each generated Trial.
+	// When unset, each scenario's default probe is used.
+	// +optional
+	Recovery *RecoverySpec `json:"recovery,omitempty"`
 }
 
 // TrialSetSpec defines the desired state of TrialSet

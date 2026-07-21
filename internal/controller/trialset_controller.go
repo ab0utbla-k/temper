@@ -435,6 +435,7 @@ func (r *TrialSetReconciler) createTrialFor(ctx context.Context, trialSet *tempe
 			},
 			Scenarios: tmpl.Scenarios,
 			Execution: tmpl.Execution,
+			Recovery:  tmpl.Recovery,
 		},
 	}
 
