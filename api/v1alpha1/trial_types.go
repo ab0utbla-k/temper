@@ -200,6 +200,22 @@ const (
 	// identifier (the CronTrial name, or "adhoc" when absent).
 	LabelCronTrial = "temper.io/cron-trial"
 
+	// LabelTrialSet is the label set by the TrialSet controller on every
+	// Trial it generates from an inline template. Metrics use its value as
+	// a bounded source identifier (the TrialSet name, falling back to the
+	// CronTrial name for cron-owned Trials or "adhoc" when neither label is
+	// present). The TrialSet controller also watches Trials carrying this
+	// label to drive per-batch status (created/completed/failed/halted
+	// counts) and to enforce maxConcurrent throttling.
+	LabelTrialSet = "temper.io/trial-set"
+
+	// LabelBatch is set alongside LabelTrialSet on every generated Trial and
+	// holds the 1-based batch number (history.totalBatches at fire time).
+	// The TrialSet controller lists Trials by both labels, so a new batch is
+	// never satisfied by an earlier batch's Trials — finished Trials stay in
+	// the cluster as history.
+	LabelBatch = "temper.io/batch"
+
 	// AnnotationHaltCode is the bounded halt bucket set alongside AnnotationHaltReason.
 	// Used for metric labels; the value is one of the HaltCode constants.
 	AnnotationHaltCode = "temper.io/halt-code"

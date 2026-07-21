@@ -57,6 +57,7 @@ rules:
   resources:
   - crontrials
   - trials
+  - trialsets
   verbs:
   - create
   - delete
@@ -70,6 +71,7 @@ rules:
   resources:
   - crontrials/finalizers
   - trials/finalizers
+  - trialsets/finalizers
   verbs:
   - update
 - apiGroups:
@@ -77,6 +79,7 @@ rules:
   resources:
   - crontrials/status
   - trials/status
+  - trialsets/status
   verbs:
   - get
   - patch

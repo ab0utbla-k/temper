@@ -849,7 +849,13 @@ func targetFromSpec(trial *temperv1alpha1.Trial) scenario.Target {
 }
 
 func sourceLabel(trial *temperv1alpha1.Trial) string {
+	// Attribution source for metrics: prefer the controlling resource so
+	// Trials are attributed to their owner rather than counted as adhoc.
+	// Order: CronTrial (cron-trial label) -> TrialSet (trial-set label) -> adhoc.
 	if val := trial.Labels[temperv1alpha1.LabelCronTrial]; val != "" {
+		return val
+	}
+	if val := trial.Labels[temperv1alpha1.LabelTrialSet]; val != "" {
 		return val
 	}
 	return "adhoc"

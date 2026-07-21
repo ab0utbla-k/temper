@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
-	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -33,7 +32,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	temperv1alpha1 "github.com/ab0utbla-k/temper/api/v1alpha1"
-	"github.com/ab0utbla-k/temper/internal/metrics"
 	"github.com/ab0utbla-k/temper/internal/safeguard"
 )
 
@@ -270,70 +268,16 @@ func (r *CronTrialReconciler) createTrial(ctx context.Context, cronTrial *temper
 	return ctrl.Result{RequeueAfter: time.Second}, nil
 }
 
+// checkSafeguards delegates to the shared safeguard.CheckSafeguards helper,
+// resolving the CronTrial's pointer-bearing spec into the plain string
+// arguments the helper expects.
 func (r *CronTrialReconciler) checkSafeguards(ctx context.Context, cronTrial *temperv1alpha1.CronTrial, template *temperv1alpha1.Trial) (bool, string, error) {
-	sg := cronTrial.Spec.Safeguards
-	if sg == nil || template.Spec.Target.Name == nil {
-		return true, "", nil
+	targetName := ""
+	if template.Spec.Target.Name != nil {
+		targetName = *template.Spec.Target.Name
 	}
-
-	if sg.MinReplicasAvailable != nil || sg.MaxUnavailable != nil {
-		metrics.SafeguardChecksTotal.WithLabelValues(cronTrial.Namespace, metrics.SafeguardTypeReplicas).Inc()
-
-		var dep appsv1.Deployment
-		if err := r.Get(ctx, client.ObjectKey{
-			Namespace: cronTrial.Namespace,
-			Name:      *template.Spec.Target.Name,
-		}, &dep); err != nil {
-			return false, "", fmt.Errorf("get deployment: %w", err)
-		}
-
-		if sg.MinReplicasAvailable != nil && dep.Status.AvailableReplicas < *sg.MinReplicasAvailable {
-			return false, fmt.Sprintf("available replicas %d < minimum %d",
-				dep.Status.AvailableReplicas, *sg.MinReplicasAvailable), nil
-		}
-		if sg.MaxUnavailable != nil && dep.Status.UnavailableReplicas > *sg.MaxUnavailable {
-			return false, fmt.Sprintf("unavailable replicas %d > maximum %d",
-				dep.Status.UnavailableReplicas, *sg.MaxUnavailable), nil
-		}
-	}
-
-	if sg.AlertSource != nil {
-		checker, err := r.NewAlertChecker(sg.AlertSource.URL)
-		if err != nil {
-			return false, fmt.Sprintf("create alert checker: %v", err), nil
-		}
-
-		metrics.SafeguardChecksTotal.WithLabelValues(cronTrial.Namespace, metrics.SafeguardTypeAlerts).Inc()
-
-		_, reason, err := safeguard.CheckAlertsFiring(ctx, sg.HaltOnAlertLabels, checker)
-		if err != nil {
-			return false, fmt.Sprintf("check alerts: %v", err), nil
-		}
-
-		if reason != "" {
-			return false, reason, nil
-		}
-	}
-
-	if sg.MetricsSource != nil && sg.SLOProtection != nil {
-		querier, err := r.NewMetricsQuerier(sg.MetricsSource.URL)
-		if err != nil {
-			return false, fmt.Sprintf("create metrics querier: %v", err), nil
-		}
-
-		metrics.SafeguardChecksTotal.WithLabelValues(cronTrial.Namespace, metrics.SafeguardTypeSLO).Inc()
-
-		_, reason, err := safeguard.CheckSLOBreach(ctx, sg.SLOProtection, querier)
-		if err != nil {
-			return false, fmt.Sprintf("check SLO: %v", err), nil
-		}
-
-		if reason != "" {
-			return false, reason, nil
-		}
-	}
-
-	return true, "", nil
+	return safeguard.CheckSafeguards(ctx, r.Client, cronTrial.Namespace, targetName,
+		cronTrial.Spec.Safeguards, r.NewAlertChecker, r.NewMetricsQuerier)
 }
 
 // SetupWithManager sets up the controller with the Manager.

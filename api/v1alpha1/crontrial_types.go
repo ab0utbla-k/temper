@@ -28,14 +28,16 @@ import (
 // For Kubernetes API conventions, see:
 // https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
 
-// ConcurrencyPolicy determines how to handle overlapping trial runs.
-// +kubebuilder:validation:Enum=Forbid;Allow;Replace
+// ConcurrencyPolicy determines how to handle overlapping trial runs. Only
+// Forbid is implemented: both controllers prevent overlap structurally (a new
+// run only ever fires from the Idle phase). The enum is restricted to what is
+// implemented — Allow/Replace can be added back the day they do something,
+// instead of being accepted and silently treated as Forbid.
+// +kubebuilder:validation:Enum=Forbid
 type ConcurrencyPolicy string
 
 const (
-	ConcurrencyPolicyForbid  ConcurrencyPolicy = "Forbid"
-	ConcurrencyPolicyAllow   ConcurrencyPolicy = "Allow"
-	ConcurrencyPolicyReplace ConcurrencyPolicy = "Replace"
+	ConcurrencyPolicyForbid ConcurrencyPolicy = "Forbid"
 )
 
 // AlertSourceType identifies the alert backend.

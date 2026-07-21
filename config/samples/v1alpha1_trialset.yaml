@@ -1,0 +1,29 @@
+apiVersion: temper.io/v1alpha1
+kind: TrialSet
+metadata:
+  labels:
+    app.kubernetes.io/name: temper
+    app.kubernetes.io/managed-by: kustomize
+  name: pod-kill-all-payments
+spec:
+  # targetSelector picks Deployments to generate Trials for by label, in the
+  # TrialSet's own namespace. Here: any Deployment labeled
+  # app.kubernetes.io/part-of=payments.
+  targetSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: payments
+  # trialTemplate is applied to each discovered Deployment. The controller
+  # stamps target.name onto each generated Trial.
+  trialTemplate:
+    scenarios:
+      - type: pod-kill
+        duration: 30s
+        podKill:
+          count: 1
+  # schedule omitted -> one-shot batch that fires once on creation.
+  # Set schedule (e.g. "0 2 * * 1-5") to repeat the batch on a cron expression.
+  maxConcurrent: 1
+  minReadyReplicas: 1
+  safeguards:
+    minReplicasAvailable: 2
+    maxUnavailable: 1

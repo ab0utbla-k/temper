@@ -55,6 +55,13 @@ func (w *Watcher) NeedLeaderElection() bool {
 
 func (w *Watcher) checkAll(ctx context.Context) {
 	log := logf.FromContext(ctx)
+
+	// seen collects the consecutiveFailures keys (trial namespace/name) that
+	// are still live this tick, so the sweep at the end can drop entries for
+	// Trials that finished or were deleted mid-streak. Without the sweep the
+	// map grows forever: trial names are unique per batch and never reused.
+	seen := make(map[string]bool)
+
 	var cronTrialList temperv1alpha1.CronTrialList
 	if err := w.client.List(ctx, &cronTrialList); err != nil {
 		log.Error(err, "Failed to list CronTrials")
@@ -67,28 +74,67 @@ func (w *Watcher) checkAll(ctx context.Context) {
 			continue
 		}
 
+		seen[cronTrial.Namespace+"/"+*cronTrial.Status.ActiveTrialName] = true
 		w.checkCronTrial(ctx, cronTrial)
 	}
+
+	// TrialSet-generated Trials carry the temper.io/trial-set label; HasLabels
+	// filters on label presence regardless of value. For each Running match,
+	// safeguardsForTrial resolves the owning TrialSet's Safeguards (nil means
+	// no runtime checks — skip), and checkTrial is the same halt path the
+	// CronTrial branch above uses.
+	var trialList temperv1alpha1.TrialList
+	if err := w.client.List(ctx, &trialList, client.HasLabels{temperv1alpha1.LabelTrialSet}); err != nil {
+		log.Error(err, "Failed to list Trials for TrialSet safeguard checks")
+		return
+	}
+	for i := range trialList.Items {
+		trial := &trialList.Items[i]
+		if trial.Status.Phase != temperv1alpha1.TrialPhaseRunning {
+			continue
+		}
+		seen[trial.Namespace+"/"+trial.Name] = true
+		sg := w.safeguardsForTrial(ctx, trial)
+		if sg == nil {
+			continue
+		}
+		w.checkTrial(ctx, trial, sg)
+	}
+
+	for key := range w.consecutiveFailures {
+		if !seen[key] {
+			delete(w.consecutiveFailures, key)
+		}
+	}
+}
+
+// safeguardsForTrial looks up the owning TrialSet and returns its Safeguards.
+// Returns nil if the Trial has no TrialSet controller owner, the TrialSet
+// cannot be found, or the TrialSet has no safeguards configured (skip).
+func (w *Watcher) safeguardsForTrial(ctx context.Context, trial *temperv1alpha1.Trial) *temperv1alpha1.Safeguards {
+	log := logf.FromContext(ctx)
+	for _, ref := range trial.OwnerReferences {
+		if ref.Kind != "TrialSet" || ref.Controller == nil || !*ref.Controller {
+			continue
+		}
+		var ts temperv1alpha1.TrialSet
+		if err := w.client.Get(ctx, client.ObjectKey{Namespace: trial.Namespace, Name: ref.Name}, &ts); err != nil {
+			log.Error(err, "Failed to get owning TrialSet for Trial",
+				"trial", trial.Name, "trialSet", ref.Name)
+			return nil
+		}
+		return ts.Spec.Safeguards
+	}
+	return nil
 }
 
 func (w *Watcher) checkCronTrial(ctx context.Context, cronTrial *temperv1alpha1.CronTrial) {
 	log := logf.FromContext(ctx)
 	sg := cronTrial.Spec.Safeguards
-
 	if sg == nil {
 		return
 	}
-
-	haltCode, haltDetail, checkErr := w.checkAlerts(ctx, cronTrial.Namespace, sg)
-	if haltCode == "" && checkErr == nil {
-		haltCode, haltDetail, checkErr = w.checkSLO(ctx, cronTrial.Namespace, sg)
-	}
-
-	key := fmt.Sprintf("%s/%s", cronTrial.Namespace, cronTrial.Name)
-	needsReplicaCheck := sg.MinReplicasAvailable != nil || sg.MaxUnavailable != nil
-
-	if haltCode == "" && checkErr == nil && !needsReplicaCheck {
-		delete(w.consecutiveFailures, key)
+	if cronTrial.Status.ActiveTrialName == nil {
 		return
 	}
 
@@ -101,15 +147,45 @@ func (w *Watcher) checkCronTrial(ctx context.Context, cronTrial *temperv1alpha1.
 		return
 	}
 
+	w.checkTrial(ctx, &trial, sg)
+}
+
+// checkTrial evaluates all configured safeguards for a single running Trial.
+// It is the shared implementation behind both the CronTrial path (via
+// checkCronTrial) and the TrialSet path (via checkAll listing
+// LabelTrialSet-labeled Trials). If a safeguard trips (haltCode != "") or
+// the checks are unreachable (checkErr != nil), the Trial is halted via
+// annotations (haltTrial) or tracked in consecutiveFailures until the
+// threshold is reached. The key is derived from the Trial's own namespace
+// and name so each Trial's failure streak is tracked independently.
+func (w *Watcher) checkTrial(ctx context.Context, trial *temperv1alpha1.Trial, sg *temperv1alpha1.Safeguards) {
+	log := logf.FromContext(ctx)
+	if sg == nil {
+		return
+	}
+
+	haltCode, haltDetail, checkErr := w.checkAlerts(ctx, trial.Namespace, sg)
+	if haltCode == "" && checkErr == nil {
+		haltCode, haltDetail, checkErr = w.checkSLO(ctx, trial.Namespace, sg)
+	}
+
+	key := fmt.Sprintf("%s/%s", trial.Namespace, trial.Name)
+	needsReplicaCheck := sg.MinReplicasAvailable != nil || sg.MaxUnavailable != nil
+
+	if haltCode == "" && checkErr == nil && !needsReplicaCheck {
+		delete(w.consecutiveFailures, key)
+		return
+	}
+
 	if haltCode == "" && needsReplicaCheck {
 		if trial.Spec.Target.Name == nil {
-			log.Info("Skipping replica check: no target name", "cronTrial", key)
+			log.Info("Skipping replica check: no target name", "trial", key)
 		} else {
-			metrics.SafeguardChecksTotal.WithLabelValues(cronTrial.Namespace, metrics.SafeguardTypeReplicas).Inc()
+			metrics.SafeguardChecksTotal.WithLabelValues(trial.Namespace, metrics.SafeguardTypeReplicas).Inc()
 
 			var dep appsv1.Deployment
 			if err := w.client.Get(ctx, client.ObjectKey{
-				Namespace: cronTrial.Namespace,
+				Namespace: trial.Namespace,
 				Name:      *trial.Spec.Target.Name,
 			}, &dep); err != nil {
 				checkErr = err
@@ -127,7 +203,7 @@ func (w *Watcher) checkCronTrial(ctx context.Context, cronTrial *temperv1alpha1.
 
 	switch {
 	case haltCode != "":
-		if err := w.haltTrial(ctx, &trial, haltCode, haltDetail); err != nil {
+		if err := w.haltTrial(ctx, trial, haltCode, haltDetail); err != nil {
 			log.Error(err, "Failed to annotate trial for halt",
 				"trial", trial.Name, "code", haltCode, "reason", haltDetail)
 			return
@@ -135,7 +211,7 @@ func (w *Watcher) checkCronTrial(ctx context.Context, cronTrial *temperv1alpha1.
 
 		log.Info(
 			"Halting trial",
-			"trial", trial.Name, "cronTrial", key, "code", haltCode, "reason", haltDetail)
+			"trial", trial.Name, "key", key, "code", haltCode, "reason", haltDetail)
 
 		delete(w.consecutiveFailures, key)
 	case checkErr != nil:
@@ -143,7 +219,7 @@ func (w *Watcher) checkCronTrial(ctx context.Context, cronTrial *temperv1alpha1.
 
 		log.Info(
 			"Safeguard check failed",
-			"cronTrial", key,
+			"key", key,
 			"consecutive", w.consecutiveFailures[key],
 			"threshold", w.failureThreshold,
 			"error", checkErr,
@@ -153,13 +229,13 @@ func (w *Watcher) checkCronTrial(ctx context.Context, cronTrial *temperv1alpha1.
 			haltCode = temperv1alpha1.HaltCodeUnreachable
 			haltDetail = fmt.Sprintf("Safeguard checks unreachable for %ds: %v", w.failureThreshold*5, checkErr)
 
-			if err := w.haltTrial(ctx, &trial, haltCode, haltDetail); err != nil {
+			if err := w.haltTrial(ctx, trial, haltCode, haltDetail); err != nil {
 				log.Error(err, "Failed to annotate trial for halt",
 					"trial", trial.Name, "code", haltCode, "reason", haltDetail)
 				return
 			}
 			log.Info("Halting trial",
-				"trial", trial.Name, "cronTrial", key, "code", haltCode, "reason", haltDetail)
+				"trial", trial.Name, "key", key, "code", haltCode, "reason", haltDetail)
 			delete(w.consecutiveFailures, key)
 		}
 	default:

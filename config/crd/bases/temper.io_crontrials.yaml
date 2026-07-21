@@ -58,8 +58,6 @@ spec:
                   is due while one is active.
                 enum:
                 - Forbid
-                - Allow
-                - Replace
                 type: string
               safeguards:
                 description: safeguards defines safety checks performed before and
