@@ -272,6 +272,35 @@ func createTrial(
 	return trial
 }
 
+func createSpotReclaimTrial(
+	ctx context.Context,
+	name, namespace, targetDeployment string,
+	duration time.Duration,
+) *temperv1alpha1.Trial {
+	trial := &temperv1alpha1.Trial{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: temperv1alpha1.TrialSpec{
+			Target: temperv1alpha1.Target{
+				Kind: "Deployment",
+				Name: new(targetDeployment),
+			},
+			Scenarios: []temperv1alpha1.Scenario{
+				{
+					Type:     temperv1alpha1.ScenarioTypeSpotReclaim,
+					Duration: metav1.Duration{Duration: duration},
+				},
+			},
+		},
+	}
+
+	Expect(k8sClient.Create(ctx, trial)).To(Succeed())
+
+	return trial
+}
+
 func createNodeDrainTrial(
 	ctx context.Context,
 	name, namespace, targetDeployment string,

@@ -43,6 +43,7 @@ const (
 	trialFinalizer      = "temper.io/trial-cleanup"
 	recoveryGracePeriod = 5 * time.Second
 	targetReadyGrace    = 60 * time.Second
+	passportTTL         = 30 * 24 * time.Hour
 )
 
 // TrialReconciler reconciles a Trial object
@@ -338,24 +339,39 @@ func (r *TrialReconciler) reconcileRunning(ctx context.Context, trial *temperv1a
 				probe = scenario.RecoveryProbe{HTTP: &scenario.HTTPProbe{URL: rec.HTTP.URL}}
 			}
 
+			changed := false
+
+			// The result row can be missing if the post-inject status write was
+			// lost - then there is nothing to fill, and completion will treat the
+			// scenario as unproven.
+			if n := len(trial.Status.ScenarioResults); n > 0 && trial.Status.ScenarioResults[n-1].ReadyAt == nil {
+				ready, err := r.workloadReady(ctx, trial)
+				if err != nil {
+					return ctrl.Result{}, fmt.Errorf("check workload readiness: %w", err)
+				}
+				if ready {
+					trial.Status.ScenarioResults[n-1].ReadyAt = new(metav1.Now())
+					changed = true
+				}
+			}
+
 			if recovered, err := r.checkRecovery(ctx, trial, probe); err != nil {
 				return ctrl.Result{}, fmt.Errorf("check recovery: %w", err)
 			} else if recovered {
 				trial.Status.RecoveredAt = new(metav1.Now())
-
-				// The result row can be missing if the post-inject status write was
-				// lost - then there is nothing to fill, and completion will treat the
-				// scenario as unproven.
 				if n := len(trial.Status.ScenarioResults); n > 0 {
 					trial.Status.ScenarioResults[n-1].RecoveredAt = trial.Status.RecoveredAt
 				}
+				changed = true
+			}
 
+			if changed {
 				if err := r.Status().Update(ctx, trial); err != nil {
-					return ctrl.Result{}, fmt.Errorf("update status after recovery: %w", err)
+					return ctrl.Result{}, fmt.Errorf("update status after recovery poll: %w", err)
 				}
 			}
 		}
-		poll := min(5*time.Second, remaining)
+		poll := min(time.Second, remaining)
 		return ctrl.Result{RequeueAfter: poll}, nil
 	}
 
@@ -595,6 +611,12 @@ func (r *TrialReconciler) completeTrial(ctx context.Context, trial *temperv1alph
 	}
 	trial.Status.Outcome = outcome
 
+	if outcome == temperv1alpha1.OutcomePassed {
+		if err := r.stampPassport(ctx, trial); err != nil {
+			return ctrl.Result{}, fmt.Errorf("stamp passport: %w", err)
+		}
+	}
+
 	if err := r.Status().Update(ctx, trial); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status to Completed: %w", err)
 	}
@@ -603,6 +625,41 @@ func (r *TrialReconciler) completeTrial(ctx context.Context, trial *temperv1alph
 	metrics.TrialsTotal.WithLabelValues(trial.Namespace, sourceLabel(trial), "completed").Inc()
 	metrics.TrialDurationSeconds.WithLabelValues(trial.Namespace, sourceLabel(trial)).Observe(time.Since(trial.CreationTimestamp.Time).Seconds())
 	return ctrl.Result{}, nil
+}
+
+// stampPassport records spot eligibility on a passed trial. Only a
+// spot-reclaim scenario proves it, so trials without one are left unstamped.
+// A missing target Deployment skips the stamp rather than erroring: the
+// verdict must not be held hostage by a workload deleted after the run.
+func (r *TrialReconciler) stampPassport(ctx context.Context, trial *temperv1alpha1.Trial) error {
+	ranSpot := false
+	for _, res := range trial.Status.ScenarioResults {
+		if res.Type == temperv1alpha1.ScenarioTypeSpotReclaim {
+			ranSpot = true
+			break
+		}
+	}
+	if !ranSpot || trial.Spec.Target.Name == nil {
+		return nil
+	}
+
+	var dep appsv1.Deployment
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: trial.Namespace,
+		Name:      *trial.Spec.Target.Name,
+	}, &dep); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("get deployment: %w", err)
+	}
+
+	trial.Status.Passport = &temperv1alpha1.Passport{
+		Eligible:         true,
+		TestedGeneration: dep.Generation,
+		ExpiresAt:        metav1.NewTime(time.Now().Add(passportTTL)),
+	}
+	return nil
 }
 
 func (r *TrialReconciler) failTrial(ctx context.Context, trial *temperv1alpha1.Trial, reason string) (ctrl.Result, error) {
@@ -639,6 +696,40 @@ func (r *TrialReconciler) checkRecovery(
 		return checkHTTPRecovery(ctx, probe.HTTP)
 	}
 
+	switch {
+	case probe.WorkloadReady != nil:
+		return r.workloadReady(ctx, trial)
+	case probe.Condition != nil:
+		if trial.Spec.Target.Name == nil {
+			return false, nil
+		}
+
+		var dep appsv1.Deployment
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: trial.Namespace,
+			Name:      *trial.Spec.Target.Name,
+		}, &dep); err != nil {
+			return false, fmt.Errorf("get deployment: %w", err)
+		}
+
+		for _, cond := range dep.Status.Conditions {
+			if string(cond.Type) == probe.Condition.Type && string(cond.Status) == string(probe.Condition.Status) {
+				return true, nil
+			}
+		}
+		return false, nil
+	case probe.Query != nil:
+		return false, fmt.Errorf("query recovery probes are not wired yet")
+	default:
+		return false, fmt.Errorf("recovery probe has no kind set")
+	}
+}
+
+// workloadReady reports whether the target Deployment's status has caught up
+// with its spec and all desired replicas are Ready. This is what Kubernetes
+// itself considers "recovered" — the recovery probe may disagree, and that
+// gap is what readyAt vs recoveredAt records.
+func (r *TrialReconciler) workloadReady(ctx context.Context, trial *temperv1alpha1.Trial) (bool, error) {
 	if trial.Spec.Target.Name == nil {
 		return false, nil
 	}
@@ -651,29 +742,15 @@ func (r *TrialReconciler) checkRecovery(
 		return false, fmt.Errorf("get deployment: %w", err)
 	}
 
-	switch {
-	case probe.WorkloadReady != nil:
-		if dep.Status.ObservedGeneration < dep.Generation {
-			return false, nil
-		}
-
-		desired := int32(1)
-		if dep.Spec.Replicas != nil {
-			desired = *dep.Spec.Replicas
-		}
-		return dep.Status.ReadyReplicas == desired, nil
-	case probe.Condition != nil:
-		for _, cond := range dep.Status.Conditions {
-			if string(cond.Type) == probe.Condition.Type && string(cond.Status) == string(probe.Condition.Status) {
-				return true, nil
-			}
-		}
+	if dep.Status.ObservedGeneration < dep.Generation {
 		return false, nil
-	case probe.Query != nil:
-		return false, fmt.Errorf("query recovery probes are not wired yet")
-	default:
-		return false, fmt.Errorf("recovery probe has no kind set")
 	}
+
+	desired := int32(1)
+	if dep.Spec.Replicas != nil {
+		desired = *dep.Spec.Replicas
+	}
+	return dep.Status.ReadyReplicas == desired, nil
 }
 
 // checkHTTPRecovery reports recovery when an HTTP GET to the probe URL returns

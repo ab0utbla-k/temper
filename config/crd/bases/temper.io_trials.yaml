@@ -333,6 +333,33 @@ spec:
                 - Failed
                 - Halted
                 type: string
+              passport:
+                description: |-
+                  passport records that the target proved spot eligibility in this trial.
+                  Only set when outcome is Passed and a spot-reclaim scenario ran.
+                properties:
+                  eligible:
+                    description: eligible reports that the target passed a spot-reclaim
+                      trial.
+                    type: boolean
+                  expiresAt:
+                    description: |-
+                      expiresAt is when this passport stops being valid. A passed run is
+                      evidence with a shelf life, not a permanent property of the workload.
+                    format: date-time
+                    type: string
+                  testedGeneration:
+                    description: |-
+                      testedGeneration is the target Deployment's metadata.generation when the
+                      passing trial completed. A later generation means the workload changed
+                      after it was tested, and the passport no longer describes it.
+                    format: int64
+                    type: integer
+                required:
+                - eligible
+                - expiresAt
+                - testedGeneration
+                type: object
               phase:
                 description: phase is the current lifecycle stage of the trial.
                 enum:
@@ -401,6 +428,16 @@ spec:
                       type: array
                     injectedAt:
                       description: injectedAt is when the fault was injected.
+                      format: date-time
+                      type: string
+                    readyAt:
+                      description: |-
+                        readyAt is when the target first reported all replicas Ready after
+                        injection. Unset means that was never observed within the scenario's
+                        duration. Observation starts after the recovery grace period, so the
+                        value is never earlier than that. The gap between readyAt and
+                        recoveredAt is how long the target claimed readiness without actually
+                        serving.
                       format: date-time
                       type: string
                     recoveredAt:
