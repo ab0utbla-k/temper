@@ -26,6 +26,9 @@ go.work
 *.swo
 *~
 
+# macOS
+.DS_Store
+
 # Kubeconfig might contain secrets
 *.kubeconfig
 
