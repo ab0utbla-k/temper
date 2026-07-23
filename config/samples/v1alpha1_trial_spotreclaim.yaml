@@ -1,0 +1,21 @@
+apiVersion: temper.io/v1alpha1
+kind: Trial
+metadata:
+  labels:
+    app.kubernetes.io/name: temper
+    app.kubernetes.io/managed-by: kustomize
+  name: spot-reclaim-sample
+spec:
+  target:
+    kind: Deployment
+    name: demo-app
+  scenarios:
+    # spotReclaim config omitted -> reclaim the node running the most target
+    # pods. duration is the recovery deadline: recover in time or Failed.
+    - type: spot-reclaim
+      duration: 60s
+  # recovery replaces the default all-replicas-Ready probe with a real HTTP
+  # check, so a readiness probe that reports ready too early cannot pass.
+  recovery:
+    http:
+      url: http://demo-app.default.svc:8080/
