@@ -1,9 +1,16 @@
-// Package risk detects resilience weaknesses on a Trial's target workload.
+// Package risk detects resilience weaknesses on a Trial's target workload
+// and classifies them per scenario.
 //
 // Detection is strictly read-only: it reads the target workload, its running
-// pods, and any PodDisruptionBudgets, and returns a list of advisory Risks.
-// It never mutates cluster state and never fails a Trial — callers surface the
-// result in status only.
+// pods, and any PodDisruptionBudgets, and returns a list of Risks. It never
+// mutates cluster state.
+//
+// Each rule also declares which scenario types its condition is a
+// prerequisite for (Rule.AppliesTo), and Relevant filters a risk list down to
+// the risks that matter for a given scenario set. What to do with the result
+// is the caller's decision: the Trial controller records risks in status, a
+// sweep skips workloads whose relevant list is not empty, and the passport
+// refuses eligibility while relevant risks remain.
 package risk
 
 import (

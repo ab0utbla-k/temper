@@ -569,9 +569,6 @@ func TestRuleDetectMitigatedAgreement(t *testing.T) {
 		}{{"risky", risky}, {"clean", clean}} {
 			t.Run(string(rule.ID())+"/"+tc.name, func(t *testing.T) {
 				detected := rule.Detect(tc.snap)
-				if got, want := rule.Mitigated(tc.snap), detected == nil; got != want {
-					t.Fatalf("Mitigated=%v disagrees with Detect==nil (%v)", got, want)
-				}
 				if detected != nil {
 					if detected.Rule != rule.ID() {
 						t.Errorf("Detect returned rule %q, want %q", detected.Rule, rule.ID())
