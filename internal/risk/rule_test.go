@@ -1,8 +1,10 @@
 package risk
 
 import (
-	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	temperv1alpha1 "github.com/ab0utbla-k/temper/api/v1alpha1"
 )
@@ -27,19 +29,13 @@ func TestAppliesToMapping(t *testing.T) {
 		temperv1alpha1.RiskNoPodDisruptionBudget: {false, true, false},
 	}
 
-	if len(want) != len(rules) {
-		t.Fatalf("mapping table has %d rules, registry has %d; keep them in sync", len(want), len(rules))
-	}
+	require.Len(t, rules, len(want), "mapping table and registry out of sync")
 
 	for _, rule := range rules {
 		row, ok := want[rule.ID()]
-		if !ok {
-			t.Fatalf("registry rule %q is missing from the mapping table", rule.ID())
-		}
+		require.True(t, ok, "registry rule %q is missing from the mapping table", rule.ID())
 		for i, scenario := range scenarios {
-			if got := rule.AppliesTo(scenario); got != row[i] {
-				t.Errorf("%s.AppliesTo(%s) = %v, want %v", rule.ID(), scenario, got, row[i])
-			}
+			assert.Equal(t, row[i], rule.AppliesTo(scenario), "%s.AppliesTo(%s)", rule.ID(), scenario)
 		}
 	}
 }
@@ -92,19 +88,15 @@ func TestRelevant(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Relevant(tc.risks, tc.types)
 			if tc.want == nil {
-				if got != nil {
-					t.Fatalf("Relevant() = %v, want nil", got)
-				}
+				assert.Nil(t, got, "Relevant() must return nil when nothing is relevant")
 				return
 			}
 
-			gotRules := make([]temperv1alpha1.RiskRule, len(got))
-			for i, r := range got {
-				gotRules[i] = r.Rule
+			gotRules := make([]temperv1alpha1.RiskRule, 0, len(got))
+			for _, r := range got {
+				gotRules = append(gotRules, r.Rule)
 			}
-			if !slices.Equal(gotRules, tc.want) {
-				t.Fatalf("Relevant() rules = %v, want %v", gotRules, tc.want)
-			}
+			assert.Equal(t, tc.want, gotRules)
 		})
 	}
 }

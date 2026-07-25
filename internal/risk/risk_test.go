@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -78,9 +80,7 @@ func TestRiskCheckSingleReplica(t *testing.T) {
 			wl := resilientWorkload()
 			wl.replicas = tc.replicas
 			got := checkSingleReplica(wl) != nil
-			if got != tc.want {
-				t.Fatalf("checkSingleReplica(replicas=%d) present=%v, want %v", tc.replicas, got, tc.want)
-			}
+			assert.Equal(t, tc.want, got, "checkSingleReplica(replicas=%d)", tc.replicas)
 		})
 	}
 }
@@ -107,9 +107,7 @@ func TestRiskCheckNoPodAntiAffinity(t *testing.T) {
 			wl := resilientWorkload()
 			wl.template = tc.template
 			got := checkNoPodAntiAffinity(wl) != nil
-			if got != tc.want {
-				t.Fatalf("checkNoPodAntiAffinity present=%v, want %v", got, tc.want)
-			}
+			assert.Equal(t, tc.want, got, "checkNoPodAntiAffinity")
 		})
 	}
 }
@@ -140,9 +138,7 @@ func TestRiskCheckMissingReadinessProbe(t *testing.T) {
 			wl := resilientWorkload()
 			wl.template.Spec.Containers = tc.containers
 			got := checkMissingReadinessProbe(wl) != nil
-			if got != tc.want {
-				t.Fatalf("checkMissingReadinessProbe present=%v, want %v", got, tc.want)
-			}
+			assert.Equal(t, tc.want, got, "checkMissingReadinessProbe")
 		})
 	}
 }
@@ -182,9 +178,7 @@ func TestRiskCheckNoPodDisruptionBudget(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := checkNoPodDisruptionBudget(resilientWorkload(), tc.pdbs) != nil
-			if got != tc.want {
-				t.Fatalf("checkNoPodDisruptionBudget present=%v, want %v", got, tc.want)
-			}
+			assert.Equal(t, tc.want, got, "checkNoPodDisruptionBudget")
 		})
 	}
 }
@@ -215,9 +209,7 @@ func TestRiskCheckConcentratedPlacement(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := checkConcentratedPlacement(tc.pods) != nil
-			if got != tc.want {
-				t.Fatalf("checkConcentratedPlacement present=%v, want %v", got, tc.want)
-			}
+			assert.Equal(t, tc.want, got, "checkConcentratedPlacement")
 		})
 	}
 }
@@ -257,9 +249,7 @@ func TestDetectRiskyDeploymentAllFiveTokens(t *testing.T) {
 	c := newClient(append([]client.Object{dep}, pods...)...)
 
 	risks, err := Detect(context.Background(), c, "Deployment", ns, target)
-	if err != nil {
-		t.Fatalf("Detect returned error: %v", err)
-	}
+	require.NoError(t, err)
 
 	for _, want := range []temperv1alpha1.RiskRule{
 		temperv1alpha1.RiskSingleReplica,
@@ -268,14 +258,10 @@ func TestDetectRiskyDeploymentAllFiveTokens(t *testing.T) {
 		temperv1alpha1.RiskNoPodDisruptionBudget,
 		temperv1alpha1.RiskConcentratedPlacement,
 	} {
-		if !hasRule(risks, want) {
-			t.Errorf("expected risk %q, not found in %+v", want, risks)
-		}
+		assert.True(t, hasRule(risks, want), "expected risk %q, not found in %+v", want, risks)
 	}
 	for _, r := range risks {
-		if r.Message == "" {
-			t.Errorf("risk %q has empty message", r.Rule)
-		}
+		assert.NotEmpty(t, r.Message, "risk %q has empty message", r.Rule)
 	}
 }
 
@@ -306,12 +292,8 @@ func TestDetectCleanDeploymentNoRisks(t *testing.T) {
 	)
 
 	risks, err := Detect(context.Background(), c, "Deployment", ns, target)
-	if err != nil {
-		t.Fatalf("Detect returned error: %v", err)
-	}
-	if len(risks) != 0 {
-		t.Fatalf("expected no risks for clean deployment, got %+v", risks)
-	}
+	require.NoError(t, err)
+	assert.Empty(t, risks, "expected no risks for clean deployment")
 }
 
 func TestDetectRiskyStatefulSet(t *testing.T) {
@@ -329,9 +311,7 @@ func TestDetectRiskyStatefulSet(t *testing.T) {
 	c := newClient(sts)
 
 	risks, err := Detect(context.Background(), c, "StatefulSet", ns, target)
-	if err != nil {
-		t.Fatalf("Detect returned error: %v", err)
-	}
+	require.NoError(t, err)
 	// Single replica, no anti-affinity, no probes, no PDB should all fire.
 	for _, want := range []temperv1alpha1.RiskRule{
 		temperv1alpha1.RiskSingleReplica,
@@ -339,17 +319,14 @@ func TestDetectRiskyStatefulSet(t *testing.T) {
 		temperv1alpha1.RiskMissingReadinessProbe,
 		temperv1alpha1.RiskNoPodDisruptionBudget,
 	} {
-		if !hasRule(risks, want) {
-			t.Errorf("expected risk %q for statefulset, not found in %+v", want, risks)
-		}
+		assert.True(t, hasRule(risks, want), "expected risk %q for statefulset, not found in %+v", want, risks)
 	}
 }
 
 func TestDetectUnsupportedKind(t *testing.T) {
 	c := newClient()
-	if _, err := Detect(context.Background(), c, "DaemonSet", ns, target); err == nil {
-		t.Fatal("expected error for unsupported kind, got nil")
-	}
+	_, err := Detect(context.Background(), c, "DaemonSet", ns, target)
+	require.Error(t, err, "unsupported kind must be rejected")
 }
 
 // toObj is a helper to pass a value pod as a client.Object.
@@ -413,9 +390,7 @@ func TestDetectMitigationPerRule(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{Name: "pdb", Namespace: ns},
 					Spec:       policyv1.PodDisruptionBudgetSpec{Selector: &metav1.LabelSelector{MatchLabels: appLabels}},
 				}
-				if err := c.Create(context.Background(), pdb); err != nil {
-					t.Fatalf("create pdb: %v", err)
-				}
+				require.NoError(t, c.Create(context.Background(), pdb), "create pdb")
 			},
 		},
 		{
@@ -424,9 +399,7 @@ func TestDetectMitigationPerRule(t *testing.T) {
 			mitigate: func(t *testing.T, c client.Client) {
 				t.Helper()
 				var pod corev1.Pod
-				if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "payment-2"}, &pod); err != nil {
-					t.Fatalf("get pod: %v", err)
-				}
+				require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "payment-2"}, &pod), "get pod")
 				pod.Spec.NodeName = "node-b"
 				mustUpdate(t, c, &pod)
 			},
@@ -441,27 +414,16 @@ func TestDetectMitigationPerRule(t *testing.T) {
 			)
 
 			before, err := Detect(context.Background(), c, "Deployment", ns, target)
-			if err != nil {
-				t.Fatalf("Detect (before): %v", err)
-			}
-			if !hasRule(before, tc.rule) {
-				t.Fatalf("precondition failed: rule %q not detected before mitigation in %+v", tc.rule, before)
-			}
+			require.NoError(t, err, "Detect (before)")
+			require.True(t, hasRule(before, tc.rule), "precondition: rule %q not detected before mitigation in %+v", tc.rule, before)
 
 			tc.mitigate(t, c)
 
 			after, err := Detect(context.Background(), c, "Deployment", ns, target)
-			if err != nil {
-				t.Fatalf("Detect (after): %v", err)
-			}
-			if hasRule(after, tc.rule) {
-				t.Fatalf("rule %q still present after mitigation: %+v", tc.rule, after)
-			}
+			require.NoError(t, err, "Detect (after)")
+			assert.False(t, hasRule(after, tc.rule), "rule %q still present after mitigation: %+v", tc.rule, after)
 			// Exactly one condition was fixed: the other risks must remain.
-			if len(after) != len(before)-1 {
-				t.Fatalf("expected %d risks after mitigating %q, got %d: %+v",
-					len(before)-1, tc.rule, len(after), after)
-			}
+			assert.Len(t, after, len(before)-1, "mitigating %q must remove exactly one risk", tc.rule)
 		})
 	}
 }
@@ -476,38 +438,26 @@ func TestDetectLateAppearingRisk(t *testing.T) {
 	c := newClient(riskyDeployment(), pdb)
 
 	before, err := Detect(context.Background(), c, "Deployment", ns, target)
-	if err != nil {
-		t.Fatalf("Detect (before): %v", err)
-	}
-	if hasRule(before, temperv1alpha1.RiskNoPodDisruptionBudget) {
-		t.Fatalf("precondition failed: NoPodDisruptionBudget present with PDB in place")
-	}
+	require.NoError(t, err, "Detect (before)")
+	require.False(t, hasRule(before, temperv1alpha1.RiskNoPodDisruptionBudget),
+		"precondition: NoPodDisruptionBudget present with PDB in place")
 
-	if err := c.Delete(context.Background(), pdb); err != nil {
-		t.Fatalf("delete pdb: %v", err)
-	}
+	require.NoError(t, c.Delete(context.Background(), pdb), "delete pdb")
 
 	after, err := Detect(context.Background(), c, "Deployment", ns, target)
-	if err != nil {
-		t.Fatalf("Detect (after): %v", err)
-	}
-	if !hasRule(after, temperv1alpha1.RiskNoPodDisruptionBudget) {
-		t.Fatalf("NoPodDisruptionBudget not detected after PDB deletion: %+v", after)
-	}
+	require.NoError(t, err, "Detect (after)")
+	assert.True(t, hasRule(after, temperv1alpha1.RiskNoPodDisruptionBudget),
+		"NoPodDisruptionBudget not detected after PDB deletion: %+v", after)
 }
 
 func mustGet(t *testing.T, c client.Client, dep *appsv1.Deployment) {
 	t.Helper()
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: target}, dep); err != nil {
-		t.Fatalf("get deployment: %v", err)
-	}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: target}, dep), "get deployment")
 }
 
 func mustUpdate(t *testing.T, c client.Client, obj client.Object) {
 	t.Helper()
-	if err := c.Update(context.Background(), obj); err != nil {
-		t.Fatalf("update %T: %v", obj, err)
-	}
+	require.NoError(t, c.Update(context.Background(), obj), "update %T", obj)
 }
 
 // --- Rule interface and registry ------------------------------------------
@@ -522,26 +472,21 @@ func TestRuleRegistryCompleteAndUnique(t *testing.T) {
 		temperv1alpha1.RiskNoPodDisruptionBudget,
 		temperv1alpha1.RiskConcentratedPlacement,
 	}
-	if len(rules) != len(want) {
-		t.Fatalf("registry has %d rules, want %d", len(rules), len(want))
-	}
+	require.Len(t, rules, len(want), "registry size")
+
 	seen := make(map[temperv1alpha1.RiskRule]bool, len(rules))
 	for i, rule := range rules {
 		id := rule.ID()
-		if seen[id] {
-			t.Errorf("rule %q registered more than once", id)
-		}
+		assert.False(t, seen[id], "rule %q registered more than once", id)
 		seen[id] = true
-		if id != want[i] {
-			t.Errorf("registry[%d] = %q, want %q (order must be deterministic)", i, id, want[i])
-		}
+		assert.Equal(t, want[i], id, "registry[%d]: order must be deterministic", i)
 	}
 }
 
-// TestRuleDetectMitigatedAgreement proves the interface invariant for every
-// rule on both a risky and a clean snapshot: Mitigated(s) == (Detect(s) == nil),
-// and a detected risk carries the rule's own ID with a message.
-func TestRuleDetectMitigatedAgreement(t *testing.T) {
+// TestRuleDetectOnRiskyAndCleanSnapshots proves every rule fires on the fully
+// risky snapshot, stays quiet on the clean one, and that a detected risk
+// carries the rule's own ID with a human-readable message.
+func TestRuleDetectOnRiskyAndCleanSnapshots(t *testing.T) {
 	risky := Snapshot{
 		Workload: workload{
 			replicas: 1,
@@ -570,24 +515,15 @@ func TestRuleDetectMitigatedAgreement(t *testing.T) {
 			t.Run(string(rule.ID())+"/"+tc.name, func(t *testing.T) {
 				detected := rule.Detect(tc.snap)
 				if detected != nil {
-					if detected.Rule != rule.ID() {
-						t.Errorf("Detect returned rule %q, want %q", detected.Rule, rule.ID())
-					}
-					if detected.Message == "" {
-						t.Errorf("rule %q returned an empty message", rule.ID())
-					}
+					assert.Equal(t, rule.ID(), detected.Rule, "Detect must return its own rule token")
+					assert.NotEmpty(t, detected.Message, "rule %q returned an empty message", rule.ID())
 				}
 			})
 		}
 	}
 
-	// Every rule must flag the fully risky snapshot and clear the clean one.
 	for _, rule := range rules {
-		if rule.Detect(risky) == nil {
-			t.Errorf("rule %q did not fire on the fully risky snapshot", rule.ID())
-		}
-		if rule.Detect(clean) != nil {
-			t.Errorf("rule %q fired on the clean snapshot", rule.ID())
-		}
+		assert.NotNil(t, rule.Detect(risky), "rule %q did not fire on the fully risky snapshot", rule.ID())
+		assert.Nil(t, rule.Detect(clean), "rule %q fired on the clean snapshot", rule.ID())
 	}
 }
